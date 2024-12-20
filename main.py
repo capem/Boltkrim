@@ -15,6 +15,9 @@ class FileOrganizerApp:
         self.excel_manager = ExcelManager()
         self.pdf_manager = PDFManager()
         
+        # Load configuration first
+        self.config_manager.load_config()
+        
         # Create notebook for tabs
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill='both', expand=True, padx=5, pady=5)
@@ -32,15 +35,15 @@ class FileOrganizerApp:
             self.excel_manager
         )
         
+        # Register callback for config changes
+        self.config_tab.add_config_change_callback(self.on_config_change)
+        
         self.notebook.add(self.processing_tab, text='Processing')
         self.notebook.add(self.config_tab, text='Configuration')
         
         # Create status bar
         self.status_bar = ttk.Label(root, text="", relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-        
-        # Load configuration
-        self.config_manager.load_config()
         
         # Load initial data if configuration exists
         config = self.config_manager.get_config()
@@ -57,6 +60,17 @@ class FileOrganizerApp:
         self.root.bind('<Return>', lambda e: self.processing_tab.process_current_file())
         self.root.bind('<Control-plus>', lambda e: self.processing_tab.zoom_in())
         self.root.bind('<Control-minus>', lambda e: self.processing_tab.zoom_out())
+
+    def on_config_change(self):
+        """Handle configuration changes."""
+        # Reload Excel data and PDF when config changes
+        config = self.config_manager.get_config()
+        if config['excel_file'] and config['excel_sheet']:
+            self.processing_tab.load_excel_data()
+            
+        # Load initial PDF if source folder exists
+        if config['source_folder'] and os.path.exists(config['source_folder']):
+            self.processing_tab.load_next_pdf()
 
 def main():
     root = tk.Tk()

@@ -7,6 +7,7 @@ class ConfigTab(ttk.Frame):
         super().__init__(master)
         self.config_manager = config_manager
         self.excel_manager = excel_manager
+        self.config_change_callbacks = []
         self.setup_ui()
         
     def setup_ui(self):
@@ -149,6 +150,10 @@ class ConfigTab(ttk.Frame):
             from .error_dialog import ErrorDialog
             ErrorDialog(self, "Error", f"Error updating column lists: {str(e)}")
             
+    def add_config_change_callback(self, callback):
+        """Add a callback to be called when config changes."""
+        self.config_change_callbacks.append(callback)
+
     def save_config(self):
         """Save current configuration."""
         new_config = {
@@ -160,3 +165,7 @@ class ConfigTab(ttk.Frame):
             'filter2_column': self.filter2_frame.get()
         }
         self.config_manager.update_config(new_config)
+        
+        # Notify all callbacks about the config change
+        for callback in self.config_change_callbacks:
+            callback()

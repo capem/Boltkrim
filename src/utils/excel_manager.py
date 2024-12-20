@@ -1,10 +1,13 @@
 import pandas as pd
-import openpyxl
+import win32com.client
+import shutil
+import time
 import os
 
 class ExcelManager:
     def __init__(self):
         self.excel_data = None
+        self.excel_app = None
         
     def load_excel_data(self, excel_file, sheet_name):
         """Load data from Excel file."""
@@ -34,30 +37,74 @@ class ExcelManager:
     def update_pdf_link(self, excel_file, sheet_name, row_idx, pdf_path):
         """Update Excel with PDF link."""
         try:
-            wb = openpyxl.load_workbook(excel_file)
-            ws = wb[sheet_name]
+            # Create backup of the Excel file
+            backup_file = excel_file + '.bak'
+            shutil.copy2(excel_file, backup_file)
             
-            # Get the last column
-            last_col = ws.max_column
-            
-            # Add header for link column if it doesn't exist
-            if ws.cell(row=1, column=last_col).value != "PDF Link":
-                last_col += 1
-                ws.cell(row=1, column=last_col, value="PDF Link")
-            
-            # Create relative path for Excel link
-            rel_path = os.path.relpath(
-                pdf_path,
-                os.path.dirname(excel_file)
-            )
-            
-            # Add hyperlink
-            ws.cell(row=row_idx + 2, column=last_col).hyperlink = rel_path
-            
-            # Save Excel file
-            wb.save(excel_file)
-            wb.close()
-            
+            try:
+                # Initialize Excel application
+                if self.excel_app is None:
+                    self.excel_app = win32com.client.Dispatch("Excel.Application")
+                    self.excel_app.Visible = False
+                    self.excel_app.DisplayAlerts = False
+                
+                # Open the workbook
+                wb = self.excel_app.Workbooks.Open(excel_file)
+                ws = wb.Worksheets(sheet_name)
+                
+                # Find the FACTURES column
+                factures_col = None
+                for col in range(1, ws.UsedRange.Columns.Count + 1):
+                    if ws.Cells(1, col).Value == "FACTURES":
+                        factures_col = col
+                        break
+                
+                if factures_col is None:
+                    raise Exception("FACTURES column not found in Excel sheet")
+                
+                # Create relative path for Excel link
+                rel_path = os.path.relpath(
+                    pdf_path,
+                    os.path.dirname(excel_file)
+                )
+                
+                # Get the cell and add hyperlink
+                cell = ws.Cells(row_idx + 2, factures_col)
+                original_value = cell.Value
+                
+                # Remove existing hyperlink if any
+                if cell.Hyperlinks.Count > 0:
+                    cell.Hyperlinks.Delete()
+                
+                # Add new hyperlink while preserving the cell value
+                ws.Hyperlinks.Add(
+                    Anchor=cell,
+                    Address=rel_path,
+                    TextToDisplay=original_value
+                )
+                
+                # Save and close
+                wb.Save()
+                wb.Close()
+                
+                # Delete backup if everything succeeded
+                if os.path.exists(backup_file):
+                    os.remove(backup_file)
+                    
+            except Exception as e:
+                # Restore from backup if something went wrong
+                if os.path.exists(backup_file):
+                    shutil.copy2(backup_file, excel_file)
+                raise e
+                
+            finally:
+                # Clean up
+                if os.path.exists(backup_file):
+                    try:
+                        os.remove(backup_file)
+                    except:
+                        pass
+                        
         except Exception as e:
             raise Exception(f"Error updating Excel with PDF link: {str(e)}")
             
@@ -73,3 +120,11 @@ class ExcelManager:
             return None
             
         return self.excel_data[mask].iloc[0], mask.idxmax()
+
+    def __del__(self):
+        """Cleanup Excel application on object destruction"""
+        if self.excel_app:
+            try:
+                self.excel_app.Quit()
+            except:
+                pass

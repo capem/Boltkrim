@@ -6,19 +6,39 @@ from PIL import Image
 import io
 
 class PDFManager:
-    @staticmethod
-    def get_next_pdf(source_folder):
+    def __init__(self):
+        self.current_file_index = -1
+        self.current_file_list = []
+        
+    def get_next_pdf(self, source_folder):
         """Get the next PDF file from the source folder."""
         if not os.path.exists(source_folder):
             return None
             
-        for file in os.listdir(source_folder):
-            if file.lower().endswith('.pdf'):
-                return os.path.join(source_folder, file)
+        # Get list of PDF files if not already loaded or if folder changed
+        pdf_files = sorted([
+            f for f in os.listdir(source_folder)
+            if f.lower().endswith('.pdf')
+        ])
+        
+        # If no PDF files found
+        if not pdf_files:
+            return None
+            
+        # Move to next file
+        self.current_file_index += 1
+        
+        # If we've reached the end, start over
+        if self.current_file_index >= len(pdf_files):
+            self.current_file_index = 0
+            
+        # Return full path of next PDF
+        if pdf_files:
+            return os.path.join(source_folder, pdf_files[self.current_file_index])
+            
         return None
         
-    @staticmethod
-    def process_pdf(current_pdf, new_filepath, processed_folder):
+    def process_pdf(self, current_pdf, new_filepath, processed_folder):
         """Process a PDF file - move it to the processed folder with a new name."""
         if not os.path.exists(current_pdf):
             raise Exception("Source PDF file not found")
@@ -43,8 +63,7 @@ class PDFManager:
                 shutil.copy2(temp_pdf, current_pdf)
                 raise Exception(f"Error processing PDF: {str(e)}")
                 
-    @staticmethod
-    def render_pdf_page(pdf_path, page_num=0, zoom=1.0):
+    def render_pdf_page(self, pdf_path, page_num=0, zoom=1.0):
         """Render a PDF page as a PhotoImage."""
         try:
             # Open the PDF file
