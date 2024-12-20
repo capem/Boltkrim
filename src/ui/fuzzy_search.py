@@ -167,25 +167,61 @@ class FuzzySearchFrame(ttk.Frame):
         selection = self.listbox.curselection()
         if selection:
             value = self.listbox.get(selection[0])
-            self._ignore_next_keyrelease = True
-            self.set(value)
-            # Generate a virtual event that can be bound by parent widgets
-            self.event_generate('<<ValueSelected>>')
+            self._select_value(value)
             self.entry.focus_set()
+            
+    def _select_value(self, value: str) -> None:
+        """Common method to handle value selection and event generation."""
+        self._ignore_next_keyrelease = True
+        self.set(value)
+        self.event_generate('<<ValueSelected>>')
             
     def _select_top_match(self) -> None:
         """Select the top match in the listbox when Enter is pressed."""
         if self.listbox.size() > 0:
-            value = self.listbox.get(0)
-            self._ignore_next_keyrelease = True
-            self.set(value)
+            self._select_value(self.listbox.get(0))
             
     def _focus_listbox(self) -> None:
         """Move focus to the listbox when Down arrow is pressed."""
         if self.listbox.size() > 0:
+            # Clear any existing selection
             self.listbox.selection_clear(0, tk.END)
+            # Set both selection and active item to first item
             self.listbox.selection_set(0)
+            self.listbox.activate(0)
             self.listbox.focus_set()
+            self.listbox.see(0)  # Ensure the selected item is visible
+            
+            # Bind keyboard events when listbox gets focus
+            self.listbox.bind('<Up>', self._on_listbox_arrow)
+            self.listbox.bind('<Down>', self._on_listbox_arrow)
+            self.listbox.bind('<Tab>', self._on_listbox_tab)
+            
+    def _on_listbox_tab(self, event) -> None:
+        """Handle Tab key when pressed in the listbox."""
+        active = self.listbox.index(tk.ACTIVE)
+        if active >= 0:
+            value = self.listbox.get(active)
+            self._select_value(value)
+            self.entry.focus_set()
+            event.widget.tk_focusNext().focus()
+        return 'break'
+            
+    def _on_listbox_arrow(self, event) -> None:
+        """Handle up/down arrow keys in listbox to maintain selection."""
+        if event.keysym == 'Up' and self.listbox.index(tk.ACTIVE) > 0:
+            new_index = self.listbox.index(tk.ACTIVE) - 1
+            self.listbox.selection_clear(0, tk.END)
+            self.listbox.selection_set(new_index)
+            self.listbox.activate(new_index)
+            self.listbox.see(new_index)
+        elif event.keysym == 'Down' and self.listbox.index(tk.ACTIVE) < self.listbox.size() - 1:
+            new_index = self.listbox.index(tk.ACTIVE) + 1
+            self.listbox.selection_clear(0, tk.END)
+            self.listbox.selection_set(new_index)
+            self.listbox.activate(new_index)
+            self.listbox.see(new_index)
+        return 'break'
             
     def _ensure_focus(self) -> None:
         """Ensure the entry widget has focus."""
@@ -207,16 +243,11 @@ class FuzzySearchFrame(ttk.Frame):
         self._focus_after_id = self.after(100, self._ensure_focus)
         
     def _handle_tab(self, event=None) -> None:
-        """Handle Tab key press: select first result and move to next widget."""
+        """Handle Tab key press in the entry widget."""
         if self.listbox.size() > 0:
-            # Select the first item
-            value = self.listbox.get(0)
-            self._ignore_next_keyrelease = True
-            self.set(value)
-            # Generate the ValueSelected event
-            self.event_generate('<<ValueSelected>>')
+            self._select_value(self.listbox.get(0))
             
-        # Prevent default Tab behavior
+        # Move to next widget
         if event:
             event.widget.tk_focusNext().focus()
             return "break"
