@@ -1,0 +1,10 @@
+{
+    "source_folder": "//192.168.0.77/tarec/Archive/SCANNER/FACTURE RECUES",
+    "processed_folder": "//192.168.0.77/tarec/Archive/SCANNER/FACTURE RECUES PROCESSED",
+    "excel_file": "//192.168.0.77/tarec/Archive/Archive 2023/SUIVI OV CHQ OPCVM BC 2023 - Copy.xlsx",
+    "excel_sheet": "FACTURE RECU",
+    "filter1_column": "FOURNISSEURS",
+    "filter2_column": "FACTURES",
+    "dropdown1_column": "FOURNISSEURS",
+    "dropdown2_column": "FACTURES"
+}
