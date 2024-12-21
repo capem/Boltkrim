@@ -8,7 +8,7 @@ class FileOrganizerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("File Organizer")
-        self.root.geometry("1200x800")
+        self.root.state('zoomed')
         
         # Initialize managers
         self.config_manager = ConfigManager()
