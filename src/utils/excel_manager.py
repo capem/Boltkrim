@@ -3,29 +3,92 @@ import win32com.client
 import shutil
 import time
 import os
+from datetime import datetime
+import socket
+
+def is_path_available(path, timeout=2):
+    """Check if a network path is available with timeout."""
+    if not path.startswith('\\\\'): # Not a network path
+        return os.path.exists(path)
+        
+    try:
+        # Extract server name from UNC path
+        server = path.split('\\')[2]
+        # Try to connect to the server
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((server, 445))  # 445 is the SMB port
+        sock.close()
+        return True
+    except:
+        return False
 
 class ExcelManager:
     def __init__(self):
         self.excel_data = None
         self.excel_app = None
+        self._cached_file = None
+        self._cached_sheet = None
+        self._last_modified = None
+        self._network_timeout = 5  # 5 seconds timeout for network operations
         
     def load_excel_data(self, excel_file, sheet_name):
-        """Load data from Excel file."""
+        """Load data from Excel file with caching."""
         try:
-            self.excel_data = pd.read_excel(
-                excel_file,
-                sheet_name=sheet_name
-            )
+            # Check network path availability first
+            if not is_path_available(excel_file):
+                raise Exception("Network path is not available")
+                
+            # Check if we need to reload
+            try:
+                current_modified = os.path.getmtime(excel_file) if os.path.exists(excel_file) else None
+            except OSError:
+                current_modified = None  # Handle network errors for file stat
+            
+            if (self.excel_data is not None and 
+                self._cached_file == excel_file and 
+                self._cached_sheet == sheet_name and 
+                self._last_modified == current_modified):
+                return True  # Use cached data
+                
+            # Load new data with timeout
+            original_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(self._network_timeout)
+            try:
+                self.excel_data = pd.read_excel(
+                    excel_file,
+                    sheet_name=sheet_name
+                )
+            finally:
+                socket.setdefaulttimeout(original_timeout)
+            
+            # Update cache info
+            self._cached_file = excel_file
+            self._cached_sheet = sheet_name
+            self._last_modified = current_modified
+            
             return True
         except Exception as e:
+            if isinstance(e, socket.timeout):
+                raise Exception("Network timeout while accessing Excel file")
             raise Exception(f"Error loading Excel data: {str(e)}")
             
     def get_sheet_names(self, excel_file):
         """Get list of sheet names from Excel file."""
         try:
-            xl = pd.ExcelFile(excel_file)
-            return xl.sheet_names
+            if not is_path_available(excel_file):
+                raise Exception("Network path is not available")
+                
+            original_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(self._network_timeout)
+            try:
+                xl = pd.ExcelFile(excel_file)
+                return xl.sheet_names
+            finally:
+                socket.setdefaulttimeout(original_timeout)
         except Exception as e:
+            if isinstance(e, socket.timeout):
+                raise Exception("Network timeout while accessing Excel file")
             raise Exception(f"Error reading Excel sheets: {str(e)}")
             
     def get_column_names(self):

@@ -4,6 +4,9 @@ import tempfile
 import fitz  # PyMuPDF
 from PIL import Image
 import io
+import time
+import socket
+from .excel_manager import is_path_available  # Reuse the network check function
 
 class PDFManager:
     def __init__(self):
@@ -11,39 +14,66 @@ class PDFManager:
         self.current_file_list = []
         self.cached_pdf = None
         self.cached_pdf_path = None
+        self._cached_source_folder = None
+        self._last_refresh_time = 0
+        self._refresh_interval = 5  # Refresh file list every 5 seconds
+        self._network_timeout = 5  # 5 seconds timeout for network operations
         
     def get_next_pdf(self, source_folder):
         """Get the next PDF file from the source folder."""
-        if not os.path.exists(source_folder):
+        try:
+            if not is_path_available(source_folder):
+                raise Exception("Network path is not available")
+                
+            current_time = time.time()
+            
+            # Only refresh file list if source folder changed or refresh interval passed
+            if (source_folder != self._cached_source_folder or 
+                current_time - self._last_refresh_time > self._refresh_interval):
+                
+                # Get list of PDF files
+                try:
+                    original_timeout = socket.getdefaulttimeout()
+                    socket.setdefaulttimeout(self._network_timeout)
+                    try:
+                        pdf_files = sorted([
+                            f for f in os.listdir(source_folder)
+                            if f.lower().endswith('.pdf')
+                        ])
+                        self.current_file_list = pdf_files
+                        self._cached_source_folder = source_folder
+                        self._last_refresh_time = current_time
+                    finally:
+                        socket.setdefaulttimeout(original_timeout)
+                except Exception as e:
+                    if isinstance(e, socket.timeout):
+                        raise Exception("Network timeout while accessing PDF folder")
+                    raise Exception(f"Error reading source folder: {str(e)}")
+            
+            # If no PDF files found
+            if not self.current_file_list:
+                return None
+                
+            # Move to next file
+            self.current_file_index += 1
+            
+            # If we've reached the end, start over
+            if self.current_file_index >= len(self.current_file_list):
+                self.current_file_index = 0
+                
+            # Return full path of next PDF
+            if self.current_file_list:
+                next_pdf = os.path.join(source_folder, self.current_file_list[self.current_file_index])
+                # Clear cache if different file
+                if next_pdf != self.cached_pdf_path:
+                    self.clear_cache()
+                return next_pdf
+                
             return None
+        except Exception as e:
+            self.clear_cache()  # Clear cache on error
+            raise e
             
-        # Get list of PDF files if not already loaded or if folder changed
-        pdf_files = sorted([
-            f for f in os.listdir(source_folder)
-            if f.lower().endswith('.pdf')
-        ])
-        
-        # If no PDF files found
-        if not pdf_files:
-            return None
-            
-        # Move to next file
-        self.current_file_index += 1
-        
-        # If we've reached the end, start over
-        if self.current_file_index >= len(pdf_files):
-            self.current_file_index = 0
-            
-        # Return full path of next PDF
-        if pdf_files:
-            next_pdf = os.path.join(source_folder, pdf_files[self.current_file_index])
-            # Clear cache if different file
-            if next_pdf != self.cached_pdf_path:
-                self.clear_cache()
-            return next_pdf
-            
-        return None
-        
     def clear_cache(self):
         """Clear the cached PDF document."""
         if self.cached_pdf:
@@ -79,11 +109,19 @@ class PDFManager:
     def render_pdf_page(self, pdf_path, page_num=0, zoom=1.0):
         """Render a PDF page as a PhotoImage."""
         try:
+            if not is_path_available(pdf_path):
+                raise Exception("Network path is not available")
+                
             # Use cached document or open new one
             if pdf_path != self.cached_pdf_path:
                 self.clear_cache()
-                self.cached_pdf = fitz.open(pdf_path)
-                self.cached_pdf_path = pdf_path
+                original_timeout = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(self._network_timeout)
+                try:
+                    self.cached_pdf = fitz.open(pdf_path)
+                    self.cached_pdf_path = pdf_path
+                finally:
+                    socket.setdefaulttimeout(original_timeout)
             
             # Get the specified page
             page = self.cached_pdf[page_num]
@@ -110,6 +148,8 @@ class PDFManager:
             
         except Exception as e:
             self.clear_cache()  # Clear cache on error
+            if isinstance(e, socket.timeout):
+                raise Exception("Network timeout while accessing PDF file")
             raise Exception(f"Error rendering PDF: {str(e)}")
         finally:
             if 'pdf_document' in locals():
