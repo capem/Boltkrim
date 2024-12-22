@@ -15,6 +15,11 @@ class ConfigTab(ttk.Frame):
         
         self.setup_ui()
         self.setup_styles()
+        self._bind_shortcuts()
+        
+    def _bind_shortcuts(self) -> None:
+        """Bind keyboard shortcuts specific to config tab."""
+        self.bind('<Control-s>', lambda e: self.save_config())
         
     def setup_styles(self):
         """Setup custom styles for widgets"""

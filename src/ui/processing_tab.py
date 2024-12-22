@@ -217,7 +217,7 @@ class PDFViewer(ttk.Frame):
         self.canvas.bind("<B1-Motion>", self._do_drag)
         self.canvas.bind("<ButtonRelease-1>", self._stop_drag)
         self.canvas.bind("<Configure>", self._on_resize)
-        self.canvas.bind_all("<Key>", self._on_key)
+        self.canvas.bind("<Key>", self._on_key)
 
     def _on_mousewheel(self, event: tk.Event) -> None:
         if event.state & 4:  # Ctrl key
@@ -516,12 +516,28 @@ class ProcessingTab(ttk.Frame):
         self.skip_button.pack(fill='x')
 
     def _bind_keyboard_shortcuts(self) -> None:
-        self.bind_all('<Return>', lambda e: self.handle_return_key(e))
-        self.bind_all('<Right>', lambda e: self.load_next_pdf())
-        self.bind_all('<Control-plus>', lambda e: self.pdf_viewer.zoom_in())
-        self.bind_all('<Control-minus>', lambda e: self.pdf_viewer.zoom_out())
-        self.bind_all('<Control-r>', lambda e: self.rotate_clockwise())
-        self.bind_all('<Control-Shift-R>', lambda e: self.rotate_counterclockwise())
+        """Bind keyboard shortcuts specific to the processing tab."""
+        shortcuts = {
+            '<Return>': self.handle_return_key,
+            '<Control-n>': lambda e: self.load_next_pdf(),
+            '<Control-N>': lambda e: self.load_next_pdf(),
+            '<Control-plus>': lambda e: self.pdf_viewer.zoom_in(),
+            '<Control-minus>': lambda e: self.pdf_viewer.zoom_out(),
+            '<Control-r>': lambda e: self.rotate_clockwise(),
+            '<Control-Shift-R>': lambda e: self.rotate_counterclockwise()
+        }
+        
+        def _bind_recursive(widget):
+            for key, callback in shortcuts.items():
+                widget.bind(key, callback)
+            for child in widget.winfo_children():
+                _bind_recursive(child)
+        
+        _bind_recursive(self)
+        
+        # Also bind to the main frame for good measure
+        for key, callback in shortcuts.items():
+            self.bind_all(key, callback)
 
     def handle_return_key(self, event: tk.Event) -> str:
         if str(self.confirm_button['state']) != 'disabled':

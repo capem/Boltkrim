@@ -77,11 +77,6 @@ class FileOrganizerApp:
     def _bind_shortcuts(self) -> None:
         """Bind keyboard shortcuts to actions."""
         shortcuts = {
-            '<Control-s>': lambda e: self.config_tab.save_config(),
-            '<Control-n>': lambda e: self.safe_load_next_pdf(),
-            '<Return>': lambda e: self.processing_tab.process_current_file(),
-            '<Control-plus>': lambda e: self.processing_tab.zoom_in(),
-            '<Control-minus>': lambda e: self.processing_tab.zoom_out(),
             '<F5>': lambda e: self.retry_load_data()
         }
         for key, callback in shortcuts.items():
