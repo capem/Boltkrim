@@ -208,6 +208,8 @@ class PDFManager:
                                 win32file.MOVEFILE_REPLACE_EXISTING | 
                                 win32file.MOVEFILE_COPY_ALLOWED
                             )
+                            # Explicitly remove the source file after successful move
+                            os.remove(current_pdf)
                         except ImportError:
                             # Fallback to os.replace if win32file is not available
                             shutil.copy2(temp_pdf, new_filepath)
