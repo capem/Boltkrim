@@ -78,7 +78,7 @@ class FileOrganizerApp:
         """Bind keyboard shortcuts to actions."""
         shortcuts = {
             '<Control-s>': lambda e: self.config_tab.save_config(),
-            '<Right>': lambda e: self.safe_load_next_pdf(),
+            '<Control-n>': lambda e: self.safe_load_next_pdf(),
             '<Return>': lambda e: self.processing_tab.process_current_file(),
             '<Control-plus>': lambda e: self.processing_tab.zoom_in(),
             '<Control-minus>': lambda e: self.processing_tab.zoom_out(),
