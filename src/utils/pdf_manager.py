@@ -18,6 +18,8 @@ class PDFManager:
         self._last_refresh_time = 0
         self._refresh_interval = 5  # Refresh file list every 5 seconds
         self._network_timeout = 5  # 5 seconds timeout for network operations
+        self._max_retries = 3  # Maximum number of retries for file operations
+        self._retry_delay = 1  # Initial retry delay in seconds
         
     def get_next_pdf(self, source_folder):
         """Get the next PDF file from the source folder."""
@@ -81,6 +83,11 @@ class PDFManager:
             self.cached_pdf = None
             self.cached_pdf_path = None
                 
+    def ensure_pdf_not_cached(self, pdf_path):
+        """Ensure that the PDF is not cached if it matches the given path."""
+        if self.cached_pdf_path == pdf_path:
+            self.clear_cache()
+
     def process_pdf(self, current_pdf, new_filepath, processed_folder):
         """Process a PDF file - move it to the processed folder with a new name."""
         if not os.path.exists(current_pdf):
@@ -88,24 +95,79 @@ class PDFManager:
             
         if not os.path.exists(processed_folder):
             os.makedirs(processed_folder)
-            
-        # Create temporary directory for atomic operations
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Create backup copy in temp directory
-            temp_pdf = os.path.join(temp_dir, "original.pdf")
-            shutil.copy2(current_pdf, temp_pdf)
-            
+
+        # Ensure we're not holding the file open
+        self.ensure_pdf_not_cached(current_pdf)
+
+        retry_count = 0
+        delay = self._retry_delay
+
+        while retry_count < self._max_retries:
             try:
-                # Move and rename the PDF file
-                os.replace(current_pdf, new_filepath)
-                return True
-            except Exception as e:
-                # Restore file from backup if operation fails
-                if os.path.exists(new_filepath):
-                    os.remove(new_filepath)
-                shutil.copy2(temp_pdf, current_pdf)
-                raise Exception(f"Error processing PDF: {str(e)}")
+                # Create temporary directory for atomic operations
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_pdf = os.path.join(temp_dir, "original.pdf")
+                    
+                    # Try to copy with multiple retries
+                    copy_success = False
+                    for _ in range(3):
+                        try:
+                            shutil.copy2(current_pdf, temp_pdf)
+                            copy_success = True
+                            break
+                        except PermissionError:
+                            time.sleep(delay)
+                    
+                    if not copy_success:
+                        raise Exception("Failed to create backup copy after multiple attempts")
+
+                    try:
+                        # Ensure target directory exists
+                        os.makedirs(os.path.dirname(new_filepath), exist_ok=True)
+                        
+                        # Try to move the file
+                        if os.path.exists(new_filepath):
+                            os.remove(new_filepath)
+                        
+                        # Use windows-specific move operation if available
+                        try:
+                            import win32file
+                            win32file.MoveFileEx(
+                                current_pdf,
+                                new_filepath,
+                                win32file.MOVEFILE_REPLACE_EXISTING | 
+                                win32file.MOVEFILE_COPY_ALLOWED
+                            )
+                        except ImportError:
+                            # Fallback to os.replace if win32file is not available
+                            os.replace(current_pdf, new_filepath)
+                        
+                        return True
+
+                    except Exception as move_error:
+                        # Restore file from backup if operation fails
+                        if os.path.exists(new_filepath):
+                            try:
+                                os.remove(new_filepath)
+                            except:
+                                pass
+                        shutil.copy2(temp_pdf, current_pdf)
+                        raise move_error
+
+            except (PermissionError, OSError) as e:
+                retry_count += 1
+                if retry_count >= self._max_retries:
+                    raise Exception(f"Failed to process PDF after {self._max_retries} attempts: {str(e)}")
                 
+                # Exponential backoff
+                time.sleep(delay)
+                delay *= 2
+            except Exception as e:
+                # Don't retry other types of errors
+                raise Exception(f"Error processing PDF: {str(e)}")
+
+        raise Exception("Failed to process PDF after exhausting all retries")
+
     def render_pdf_page(self, pdf_path, page_num=0, zoom=1.0):
         """Render a PDF page as a PhotoImage."""
         try:
