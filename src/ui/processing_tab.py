@@ -113,6 +113,7 @@ class ProcessingTab(ttk.Frame):
         zoom_frame = ttk.Frame(controls_frame)
         zoom_frame.pack(fill='x', pady=(0, 15))
         
+        # Zoom controls
         ttk.Label(zoom_frame, text="Zoom:").pack(side='left')
         ttk.Button(zoom_frame, text="−", width=3, style="Zoom.TButton",
                   command=self.zoom_out).pack(side='left', padx=2)
@@ -120,6 +121,18 @@ class ProcessingTab(ttk.Frame):
         self.zoom_label.pack(side='left', padx=5)
         ttk.Button(zoom_frame, text="+", width=3, style="Zoom.TButton",
                   command=self.zoom_in).pack(side='left', padx=2)
+        
+        # Rotation controls
+        rotation_frame = ttk.Frame(controls_frame)
+        rotation_frame.pack(fill='x', pady=(0, 15))
+        
+        ttk.Label(rotation_frame, text="Rotate:").pack(side='left')
+        ttk.Button(rotation_frame, text="↶", width=3, style="Zoom.TButton",
+                  command=self.rotate_counterclockwise).pack(side='left', padx=2)
+        self.rotation_label = ttk.Label(rotation_frame, text="0°", width=6)
+        self.rotation_label.pack(side='left', padx=5)
+        ttk.Button(rotation_frame, text="↷", width=3, style="Zoom.TButton",
+                  command=self.rotate_clockwise).pack(side='left', padx=2)
         
     def _setup_filters(self, controls_frame: ttk.Frame) -> None:
         """Setup filter controls with labels and fuzzy search frames."""
@@ -175,6 +188,8 @@ class ProcessingTab(ttk.Frame):
         self.bind_all('<Right>', lambda e: self.load_next_pdf())
         self.bind_all('<Control-plus>', lambda e: self.zoom_in())
         self.bind_all('<Control-minus>', lambda e: self.zoom_out())
+        self.bind_all('<Control-r>', lambda e: self.rotate_clockwise())
+        self.bind_all('<Control-Shift-R>', lambda e: self.rotate_counterclockwise())
         
     def handle_return_key(self, event: tk.Event) -> str:
         """Handle Return key press for processing current file.
@@ -250,26 +265,37 @@ class ProcessingTab(ttk.Frame):
         self.display_pdf()
         self.zoom_label.config(text=f"{int(self.zoom_level * 100)}%")
         
+    def rotate_clockwise(self) -> None:
+        """Rotate the PDF clockwise by 90 degrees."""
+        self.pdf_manager.rotate_page(clockwise=True)
+        self.rotation_label.config(text=f"{self.pdf_manager.get_rotation()}°")
+        self.display_pdf()
+        
+    def rotate_counterclockwise(self) -> None:
+        """Rotate the PDF counterclockwise by 90 degrees."""
+        self.pdf_manager.rotate_page(clockwise=False)
+        self.rotation_label.config(text=f"{self.pdf_manager.get_rotation()}°")
+        self.display_pdf()
+        
     def load_next_pdf(self) -> None:
-        """Load and display the next PDF file from source folder."""
+        """Load the next PDF file from the source folder."""
         try:
             config = self.config_manager.get_config()
             if not config['source_folder']:
-                ErrorDialog(self, "Error", "Source folder not configured")
-                return
-            
-            self.current_pdf = self.pdf_manager.get_next_pdf(config['source_folder'])
-            
-            if not self.current_pdf:
-                self.file_info.config(text="No PDF files found in source folder")
-                self.confirm_button.state(['disabled'])
-                self.skip_button.state(['disabled'])
                 return
                 
-            self.skip_button.state(['!disabled'])
-            self.confirm_button.state(['disabled'])
-            self.display_pdf()
-            
+            next_pdf = self.pdf_manager.get_next_pdf(config['source_folder'])
+            if next_pdf:
+                self.current_pdf = next_pdf
+                self.file_info['text'] = os.path.basename(next_pdf)
+                self.zoom_level = self.INITIAL_ZOOM
+                self.zoom_label.config(text="100%")
+                self.rotation_label.config(text="0°")  # Reset rotation label
+                self.display_pdf()
+                self.filter1_frame.focus_set()
+            else:
+                self.file_info['text'] = "No PDF files found"
+                
         except Exception as e:
             ErrorDialog(self, "Error", f"Error loading next PDF: {str(e)}")
             

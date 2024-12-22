@@ -20,6 +20,7 @@ class PDFManager:
         self._network_timeout = 5  # 5 seconds timeout for network operations
         self._max_retries = 3  # Maximum number of retries for file operations
         self._retry_delay = 1  # Initial retry delay in seconds
+        self.current_rotation = 0  # Track current rotation (0, 90, 180, 270)
         
     def get_next_pdf(self, source_folder):
         """Get the next PDF file from the source folder."""
@@ -88,8 +89,70 @@ class PDFManager:
         if self.cached_pdf_path == pdf_path:
             self.clear_cache()
 
+    def rotate_page(self, clockwise=True):
+        """Rotate the current PDF page clockwise or counterclockwise by 90 degrees."""
+        if clockwise:
+            self.current_rotation = (self.current_rotation + 90) % 360
+        else:
+            self.current_rotation = (self.current_rotation - 90) % 360
+            
+    def get_rotation(self):
+        """Get the current rotation angle."""
+        return self.current_rotation
+        
+    def render_pdf_page(self, pdf_path, page_num=0, zoom=1.0):
+        """Render a PDF page as a PhotoImage."""
+        try:
+            if not is_path_available(pdf_path):
+                raise Exception("Network path is not available")
+                
+            # Use cached document or open new one
+            if pdf_path != self.cached_pdf_path:
+                self.clear_cache()
+                original_timeout = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(self._network_timeout)
+                try:
+                    self.cached_pdf = fitz.open(pdf_path)
+                    self.cached_pdf_path = pdf_path
+                finally:
+                    socket.setdefaulttimeout(original_timeout)
+            
+            # Get the specified page
+            page = self.cached_pdf[page_num]
+            
+            # Calculate matrix with optimized settings for scanned PDFs
+            base_dpi = 72  # Base DPI for PDF
+            quality_multiplier = 2 if zoom > 1.0 else 1  # Higher quality when zoomed in
+            
+            # Create matrix with optimal settings for scanned documents and rotation
+            zoom_matrix = fitz.Matrix(zoom * quality_multiplier, zoom * quality_multiplier)
+            if self.current_rotation:
+                zoom_matrix.prerotate(self.current_rotation)
+            
+            # Get page as a PNG image with optimized settings for scanned documents
+            pix = page.get_pixmap(
+                matrix=zoom_matrix,
+                alpha=False,  # No alpha channel needed for scanned docs
+                colorspace="rgb",  # Force RGB colorspace
+            )
+            
+            # Convert to PIL Image
+            img_data = pix.tobytes("png")
+            image = Image.open(io.BytesIO(img_data))
+            
+            return image
+            
+        except Exception as e:
+            self.clear_cache()  # Clear cache on error
+            if isinstance(e, socket.timeout):
+                raise Exception("Network timeout while accessing PDF file")
+            raise Exception(f"Error rendering PDF: {str(e)}")
+        finally:
+            if 'pdf_document' in locals():
+                pdf_document.close()
+                
     def process_pdf(self, current_pdf, new_filepath, processed_folder):
-        """Process a PDF file - move it to the processed folder with a new name."""
+        """Process a PDF file - move it to the processed folder with a new name and apply rotation if needed."""
         if not os.path.exists(current_pdf):
             raise Exception("Source PDF file not found")
             
@@ -107,6 +170,7 @@ class PDFManager:
                 # Create temporary directory for atomic operations
                 with tempfile.TemporaryDirectory() as temp_dir:
                     temp_pdf = os.path.join(temp_dir, "original.pdf")
+                    rotated_pdf = os.path.join(temp_dir, "rotated.pdf")
                     
                     # Try to copy with multiple retries
                     copy_success = False
@@ -121,6 +185,15 @@ class PDFManager:
                     if not copy_success:
                         raise Exception("Failed to create backup copy after multiple attempts")
 
+                    # Apply rotation if needed
+                    if self.current_rotation != 0:
+                        doc = fitz.open(temp_pdf)
+                        page = doc[0]  # Assuming single page PDFs
+                        page.set_rotation(self.current_rotation)
+                        doc.save(rotated_pdf)
+                        doc.close()
+                        temp_pdf = rotated_pdf
+
                     try:
                         # Ensure target directory exists
                         os.makedirs(os.path.dirname(new_filepath), exist_ok=True)
@@ -133,15 +206,18 @@ class PDFManager:
                         try:
                             import win32file
                             win32file.MoveFileEx(
-                                current_pdf,
+                                temp_pdf,
                                 new_filepath,
                                 win32file.MOVEFILE_REPLACE_EXISTING | 
                                 win32file.MOVEFILE_COPY_ALLOWED
                             )
                         except ImportError:
                             # Fallback to os.replace if win32file is not available
-                            os.replace(current_pdf, new_filepath)
+                            shutil.copy2(temp_pdf, new_filepath)
+                            os.remove(current_pdf)
                         
+                        # Reset rotation after successful processing
+                        self.current_rotation = 0
                         return True
 
                     except Exception as move_error:
@@ -167,52 +243,3 @@ class PDFManager:
                 raise Exception(f"Error processing PDF: {str(e)}")
 
         raise Exception("Failed to process PDF after exhausting all retries")
-
-    def render_pdf_page(self, pdf_path, page_num=0, zoom=1.0):
-        """Render a PDF page as a PhotoImage."""
-        try:
-            if not is_path_available(pdf_path):
-                raise Exception("Network path is not available")
-                
-            # Use cached document or open new one
-            if pdf_path != self.cached_pdf_path:
-                self.clear_cache()
-                original_timeout = socket.getdefaulttimeout()
-                socket.setdefaulttimeout(self._network_timeout)
-                try:
-                    self.cached_pdf = fitz.open(pdf_path)
-                    self.cached_pdf_path = pdf_path
-                finally:
-                    socket.setdefaulttimeout(original_timeout)
-            
-            # Get the specified page
-            page = self.cached_pdf[page_num]
-            
-            # Calculate matrix with optimized settings for scanned PDFs
-            base_dpi = 72  # Base DPI for PDF
-            quality_multiplier = 2 if zoom > 1.0 else 1  # Higher quality when zoomed in
-            
-            # Create matrix with optimal settings for scanned documents
-            zoom_matrix = fitz.Matrix(zoom * quality_multiplier, zoom * quality_multiplier)
-            
-            # Get page as a PNG image with optimized settings for scanned documents
-            pix = page.get_pixmap(
-                matrix=zoom_matrix,
-                alpha=False,  # No alpha channel needed for scanned docs
-                colorspace="rgb",  # Force RGB colorspace
-            )
-            
-            # Convert to PIL Image
-            img_data = pix.tobytes("png")
-            image = Image.open(io.BytesIO(img_data))
-            
-            return image
-            
-        except Exception as e:
-            self.clear_cache()  # Clear cache on error
-            if isinstance(e, socket.timeout):
-                raise Exception("Network timeout while accessing PDF file")
-            raise Exception(f"Error rendering PDF: {str(e)}")
-        finally:
-            if 'pdf_document' in locals():
-                pdf_document.close()
