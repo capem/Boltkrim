@@ -10,7 +10,8 @@ class ConfigManager:
             'excel_file': '',
             'excel_sheet': '',
             'filter1_column': '',  
-            'filter2_column': ''   
+            'filter2_column': '',
+            'output_template': '{processed_folder}/{filter1|str.upper} - {filter2|str.upper}.pdf'
         }
         self.config = self.default_config.copy()
         

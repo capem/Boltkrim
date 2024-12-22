@@ -108,9 +108,40 @@ class ConfigTab(ttk.Frame):
         self.filter2_frame = FuzzySearchFrame(column_frame, width=30, identifier='config_filter2')
         self.filter2_frame.grid(row=0, column=3, padx=2, sticky='ew')
         
+        # Template Configuration
+        template_frame = ttk.LabelFrame(self, text="Output Template", padding=5)
+        template_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky='nsew')
+        template_frame.grid_columnconfigure(0, weight=1)
+        
+        # Template help text
+        help_text = (
+            "Template Syntax Guide:\n"
+            "• Basic fields: {field_name}\n"
+            "• Multiple operations: {field|operation1|operation2}\n\n"
+            "Date Operations:\n"
+            "• Extract year: {DATE FACTURE|date.year}\n"
+            "• Extract month: {DATE FACTURE|date.month}\n"
+            "• Year-Month: {DATE FACTURE|date.year_month}\n"
+            "• Custom format: {DATE FACTURE|date.format:%Y/%m}\n\n"
+            "String Operations:\n"
+            "• Uppercase: {field|str.upper}\n"
+            "• Lowercase: {field|str.lower}\n"
+            "• Title Case: {field|str.title}\n"
+            "• Replace: {field|str.replace:old:new}\n"
+            "• Slice: {field|str.slice:0:4}"
+        )
+        
+        help_label = ttk.Label(template_frame, text=help_text, justify=tk.LEFT)
+        help_label.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0,5))
+        
+        # Template Entry
+        ttk.Label(template_frame, text="Template:", style="Section.TLabel").grid(row=1, column=0, sticky='w', pady=2)
+        self.template_entry = ttk.Entry(template_frame)
+        self.template_entry.grid(row=2, column=0, sticky='ew', pady=(0,5))
+        
         # Bottom Frame for Save Button and Status
         bottom_frame = ttk.Frame(self)
-        bottom_frame.grid(row=3, column=0, columnspan=2, pady=5)
+        bottom_frame.grid(row=4, column=0, columnspan=2, pady=5)
         
         # Save Button and Status Label side by side
         save_btn = ttk.Button(bottom_frame, 
@@ -140,6 +171,7 @@ class ConfigTab(ttk.Frame):
         self.source_folder_entry.insert(0, config['source_folder'])
         self.processed_folder_entry.insert(0, config['processed_folder'])
         self.excel_file_entry.insert(0, config['excel_file'])
+        self.template_entry.insert(0, config.get('output_template', '{processed_folder}/{filter1|str.upper} - {filter2|str.upper}.pdf'))
         
         if config['excel_file']:
             self.update_sheet_list()
@@ -232,13 +264,15 @@ class ConfigTab(ttk.Frame):
                 'filter1_column': self.filter1_frame.get(),
                 'filter2_column': self.filter2_frame.get(),
                 'dropdown1_column': self.filter1_frame.get(),  # Keep backward compatibility
-                'dropdown2_column': self.filter2_frame.get()   # Keep backward compatibility
+                'dropdown2_column': self.filter2_frame.get(),   # Keep backward compatibility
+                'output_template': self.template_entry.get()
             }
             
             # Basic validation
             if not all([new_config['source_folder'], new_config['processed_folder'], 
                        new_config['excel_file'], new_config['excel_sheet'],
-                       new_config['filter1_column'], new_config['filter2_column']]):
+                       new_config['filter1_column'], new_config['filter2_column'],
+                       new_config['output_template']]):
                 self.show_status_message("Please fill in all required fields", is_error=True)
                 return
                 

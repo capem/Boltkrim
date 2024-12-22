@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from .fuzzy_search import FuzzySearchFrame
 from .error_dialog import ErrorDialog
 import pythoncom
+from datetime import datetime
 
 # Data Models
 @dataclass
@@ -112,24 +113,52 @@ class ProcessingQueue:
                 
                 if row_data is None:
                     raise Exception("Selected combination not found in Excel sheet")
-                    
-                new_filename = f"{row_data[config['filter1_column']]} - {row_data[config['filter2_column']]}"
-                invalid_chars = '<>:"/\\|?*'
-                for char in invalid_chars:
-                    new_filename = new_filename.replace(char, '_')
-                    
-                if not new_filename.lower().endswith('.pdf'):
-                    new_filename += '.pdf'
-                    
-                new_filepath = os.path.join(config['processed_folder'], new_filename)
                 
-                if self.pdf_manager.process_pdf(task_to_process.pdf_path, new_filepath, 
-                                              config['processed_folder']):
+                # Prepare template data with consistent field names
+                template_data = {
+                    'filter1': row_data[config['filter1_column']],
+                    'filter2': row_data[config['filter2_column']],
+                    'filter_1': row_data[config['filter1_column']],  # For backward compatibility
+                    'filter_2': row_data[config['filter2_column']]   # For backward compatibility
+                }
+                
+                # Add DATE FACTURE from Excel if it exists
+                if 'DATE FACTURE' in row_data:
+                    # Try to parse the date from Excel
+                    try:
+                        if isinstance(row_data['DATE FACTURE'], datetime):
+                            template_data['DATE FACTURE'] = row_data['DATE FACTURE']
+                        else:
+                            # Try to parse the date string (add more formats if needed)
+                            for date_format in ['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%Y/%m/%d']:
+                                try:
+                                    template_data['DATE FACTURE'] = datetime.strptime(str(row_data['DATE FACTURE']), date_format)
+                                    break
+                                except ValueError:
+                                    continue
+                            if 'DATE FACTURE' not in template_data:
+                                raise ValueError(f"Could not parse date: {row_data['DATE FACTURE']}")
+                    except Exception as e:
+                        raise Exception(f"Error processing DATE FACTURE: {str(e)}")
+                
+                # Process the PDF with template-based naming
+                if self.pdf_manager.process_pdf(
+                    task_to_process.pdf_path,
+                    template_data,
+                    config['processed_folder'],
+                    config['output_template']
+                ):
+                    # Get the actual output path for Excel update
+                    output_path = self.pdf_manager.generate_output_path(
+                        config['output_template'],
+                        template_data
+                    )
+                    
                     excel_manager.update_pdf_link(
                         config['excel_file'],
                         config['excel_sheet'],
                         row_idx,
-                        new_filepath
+                        output_path
                     )
                     
                     with self.lock:

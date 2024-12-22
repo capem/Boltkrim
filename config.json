@@ -5,6 +5,7 @@
     "excel_sheet": "FACTURE RECU",
     "filter1_column": "FOURNISSEURS",
     "filter2_column": "FACTURES",
+    "output_template": "{processed_folder}/{DATE FACTURE|date.year}/{DATE FACTURE|date.year_month}/{filter_1} - {filter_2}.pdf",
     "dropdown1_column": "FOURNISSEURS",
     "dropdown2_column": "FACTURES"
 }
