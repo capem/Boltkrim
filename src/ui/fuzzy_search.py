@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
+from difflib import SequenceMatcher
 
 class FuzzySearchFrame(ttk.Frame):
     """A frame that provides fuzzy search functionality with a text entry and listbox.
@@ -22,18 +23,15 @@ class FuzzySearchFrame(ttk.Frame):
         self.search_threshold = max(0, min(100, search_threshold))  # Clamp between 0 and 100
         self.identifier = identifier or 'unnamed'
         
-        # Debouncing variables
+        # Remove debouncing since we want instantaneous results
         self._prev_value = ''
-        self._after_id = None
         self._ignore_next_keyrelease = False
-        self._debounce_delay = 0  # Changed from 150 to 0 to remove delay
         self._focus_after_id = None
         
         self._create_widgets()
         self._bind_events()
         self._update_listbox()
         
-        # Schedule focus set after widget is fully realized
         self.after(100, self._ensure_focus)
         
     def _create_widgets(self) -> None:
@@ -103,7 +101,7 @@ class FuzzySearchFrame(ttk.Frame):
         self._update_listbox()
         
     def _update_listbox(self) -> None:
-        """Update the listbox with fuzzy search results."""
+        """Update the listbox with intelligent fuzzy search results."""
         current_value = self.entry.get().strip()
         
         # Clear current listbox
@@ -116,41 +114,44 @@ class FuzzySearchFrame(ttk.Frame):
             return
             
         try:
-            # Convert search term to lowercase for case-insensitive matching
             search_lower = current_value.lower()
             
-            # 1. Exact matches (case-insensitive)
-            exact_matches = [v for v in self.all_values if v.lower() == search_lower]
-            
-            # 2. Prefix matches (prioritized by length)
-            prefix_matches = [
-                v for v in self.all_values 
-                if v.lower().startswith(search_lower) 
-                and v not in exact_matches
-            ]
-            # Sort prefix matches by length (shorter first) then alphabetically
-            prefix_matches.sort(key=lambda x: (len(x), x.lower()))
-            
-            # 3. Contains matches (words that contain the search term)
-            contains_matches = [
-                v for v in self.all_values 
-                if search_lower in v.lower() 
-                and v not in exact_matches 
-                and v not in prefix_matches
-            ]
-            
-            # Add matches to listbox in priority order
-            # 1. Exact matches
-            for match in exact_matches:
-                self.listbox.insert(tk.END, match)
+            # Calculate scores for all values
+            scored_matches = []
+            for value in self.all_values:
+                value_lower = value.lower()
+                score = 0
                 
-            # 2. Prefix matches
-            for match in prefix_matches:
-                self.listbox.insert(tk.END, match)
+                # Exact match gets highest priority
+                if value_lower == search_lower:
+                    score = 100
                 
-            # 3. Contains matches
-            for match in contains_matches:
-                self.listbox.insert(tk.END, match)
+                # Prefix match gets high priority
+                elif value_lower.startswith(search_lower):
+                    score = 90 - len(value)  # Shorter matches rank higher
+                
+                # Word boundary match
+                elif any(word.startswith(search_lower) for word in value_lower.split()):
+                    score = 80 - len(value)
+                
+                # Contains match
+                elif search_lower in value_lower:
+                    score = 70 - value_lower.index(search_lower)  # Earlier matches rank higher
+                
+                # Fuzzy match using sequence matcher
+                else:
+                    ratio = SequenceMatcher(None, search_lower, value_lower).ratio()
+                    if ratio > 0.5:  # Only include if somewhat similar
+                        score = int(ratio * 60)  # Max score of 60 for fuzzy matches
+                
+                if score > 0:
+                    scored_matches.append((score, value))
+            
+            # Sort by score (highest first) and add to listbox
+            scored_matches.sort(reverse=True, key=lambda x: (x[0], -len(x[1])))
+            
+            for _, value in scored_matches:
+                self.listbox.insert(tk.END, value)
                 
         except Exception as e:
             print(f"Error in fuzzy search ({self.identifier}): {str(e)}")
