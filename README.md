@@ -60,7 +60,7 @@ file_organizer/
 ## Keyboard Shortcuts
 
 - `Ctrl+S`: Save configuration
-- `Ctrl+N`: Load next PDF
+- `Right Arrow`: Load next PDF
 - `Enter`: Process current file
 - `Ctrl++`: Zoom in
 - `Ctrl+-`: Zoom out

@@ -509,7 +509,7 @@ class ProcessingTab(ttk.Frame):
         
         self.skip_button = ttk.Button(
             actions_frame,
-            text="Skip File (→)",
+            text="Skip File (ctr-N)",
             command=self.load_next_pdf,
             style="Action.TButton"
         )
