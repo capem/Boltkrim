@@ -147,10 +147,7 @@ class PDFManager:
             if isinstance(e, socket.timeout):
                 raise Exception("Network timeout while accessing PDF file")
             raise Exception(f"Error rendering PDF: {str(e)}")
-        finally:
-            if 'pdf_document' in locals():
-                pdf_document.close()
-                
+
     def process_pdf(self, current_pdf, new_filepath, processed_folder):
         """Process a PDF file - move it to the processed folder with a new name and apply rotation if needed."""
         if not os.path.exists(current_pdf):
