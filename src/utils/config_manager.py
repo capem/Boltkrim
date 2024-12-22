@@ -14,6 +14,25 @@ class ConfigManager:
             'output_template': '{processed_folder}/{filter1|str.upper} - {filter2|str.upper}.pdf'
         }
         self.config = self.default_config.copy()
+        self.change_callbacks = []
+        
+    def add_change_callback(self, callback):
+        """Add a callback to be called when config changes."""
+        if callback not in self.change_callbacks:
+            self.change_callbacks.append(callback)
+            
+    def remove_change_callback(self, callback):
+        """Remove a previously added callback."""
+        if callback in self.change_callbacks:
+            self.change_callbacks.remove(callback)
+            
+    def _notify_callbacks(self):
+        """Notify all registered callbacks about config changes."""
+        for callback in self.change_callbacks:
+            try:
+                callback()
+            except Exception as e:
+                print(f"Error in config change callback: {str(e)}")
         
     def load_config(self):
         """Load configuration from file."""
@@ -40,6 +59,7 @@ class ConfigManager:
         """Update configuration with new values."""
         self.config.update(new_values)
         self.save_config()
+        self._notify_callbacks()
         
     def get_config(self):
         """Get current configuration."""
@@ -49,3 +69,4 @@ class ConfigManager:
         """Reset configuration to defaults."""
         self.config = self.default_config.copy()
         self.save_config()
+        self._notify_callbacks()
