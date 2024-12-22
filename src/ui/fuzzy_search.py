@@ -66,6 +66,23 @@ class FuzzySearchFrame(ttk.Frame):
         scrollbar.pack(side='right', fill='y')
         self.listbox.configure(yscrollcommand=scrollbar.set)
         
+        # Configure mousewheel scrolling
+        def _on_mousewheel(event):
+            self.listbox.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+        
+        def _bind_mousewheel(event):
+            self.listbox.bind_all("<MouseWheel>", _on_mousewheel)
+            
+        def _unbind_mousewheel(event):
+            self.listbox.unbind_all("<MouseWheel>")
+        
+        # Bind mousewheel only when mouse is over the listbox area
+        self.listbox.bind('<Enter>', _bind_mousewheel)
+        self.listbox.bind('<Leave>', _unbind_mousewheel)
+        scrollbar.bind('<Enter>', _bind_mousewheel)
+        scrollbar.bind('<Leave>', _unbind_mousewheel)
+        
     def _bind_events(self) -> None:
         """Bind widget events to their handlers."""
         self.entry.bind('<KeyRelease>', self._on_keyrelease)

@@ -212,7 +212,27 @@ class PDFViewer(ttk.Frame):
         self._bind_events()
 
     def _bind_events(self) -> None:
-        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        def _on_mousewheel(event):
+            if event.state & 4:  # Ctrl key
+                if event.delta > 0:
+                    self.zoom_in()
+                else:
+                    self.zoom_out()
+            else:
+                self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _bind_mousewheel(event):
+            self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            
+        def _unbind_mousewheel(event):
+            self.canvas.unbind_all("<MouseWheel>")
+
+        # Bind mousewheel only when mouse is over the PDF viewer area
+        self.canvas.bind('<Enter>', _bind_mousewheel)
+        self.canvas.bind('<Leave>', _unbind_mousewheel)
+        self.v_scrollbar.bind('<Enter>', _bind_mousewheel)
+        self.v_scrollbar.bind('<Leave>', _unbind_mousewheel)
+        
         self.canvas.bind("<Button-1>", self._start_drag)
         self.canvas.bind("<B1-Motion>", self._do_drag)
         self.canvas.bind("<ButtonRelease-1>", self._stop_drag)
@@ -427,16 +447,54 @@ class ProcessingTab(ttk.Frame):
         self.pdf_viewer = PDFViewer(viewer_frame, self.pdf_manager)
         self.pdf_viewer.pack(fill='both', expand=True)
         
-        # Controls
-        controls_frame = ttk.LabelFrame(content_frame, text="Controls", padding=10)
+        # Controls - Add scrollable frame
+        controls_outer_frame = ttk.Frame(content_frame)
+        controls_outer_frame.pack(side='right', fill='y')
+        
+        # Create canvas and scrollbar for controls
+        controls_canvas = tk.Canvas(controls_outer_frame, width=250)
+        controls_scrollbar = ttk.Scrollbar(controls_outer_frame, orient="vertical", command=controls_canvas.yview)
+        
+        # Controls frame
+        controls_frame = ttk.LabelFrame(controls_canvas, text="Controls", padding=10)
         controls_frame.configure(width=250)
-        controls_frame.pack(side='right', fill='y')
-        controls_frame.pack_propagate(False)
+        
+        # Configure canvas
+        controls_canvas.configure(yscrollcommand=controls_scrollbar.set)
+        controls_canvas.pack(side='left', fill='both', expand=True)
+        controls_scrollbar.pack(side='right', fill='y')
+        
+        # Create window in canvas for controls frame
+        canvas_frame = controls_canvas.create_window((0, 0), window=controls_frame, anchor='nw', width=230)
         
         self._setup_zoom_controls(controls_frame)
         self._setup_queue_display(controls_frame)
         self._setup_filters(controls_frame)
         self._setup_action_buttons(controls_frame)
+        
+        # Configure scrolling
+        def _configure_canvas(event):
+            controls_canvas.configure(scrollregion=controls_canvas.bbox("all"))
+            controls_canvas.itemconfig(canvas_frame, width=controls_canvas.winfo_width())
+        
+        controls_frame.bind('<Configure>', _configure_canvas)
+        controls_canvas.bind('<Configure>', lambda e: controls_canvas.itemconfig(canvas_frame, width=controls_canvas.winfo_width()))
+        
+        # Enable mousewheel scrolling only when mouse is over controls
+        def _on_mousewheel(event):
+            controls_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        
+        def _bind_mousewheel(event):
+            controls_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            
+        def _unbind_mousewheel(event):
+            controls_canvas.unbind_all("<MouseWheel>")
+        
+        # Bind mousewheel only when mouse enters/leaves the controls area
+        controls_canvas.bind('<Enter>', _bind_mousewheel)
+        controls_canvas.bind('<Leave>', _unbind_mousewheel)
+        controls_scrollbar.bind('<Enter>', _bind_mousewheel)
+        controls_scrollbar.bind('<Leave>', _unbind_mousewheel)
         
         self._bind_keyboard_shortcuts()
 
@@ -513,7 +571,7 @@ class ProcessingTab(ttk.Frame):
             command=self.load_next_pdf,
             style="Action.TButton"
         )
-        self.skip_button.pack(fill='x')
+        self.skip_button.pack(fill='x', pady=(0, 10))
 
     def _bind_keyboard_shortcuts(self) -> None:
         """Bind keyboard shortcuts specific to the processing tab."""
