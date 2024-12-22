@@ -143,6 +143,12 @@ class PDFManager:
                             os.remove(current_pdf)
                         
                         # Reset rotation after successful processing
+                        if self.current_rotation != 0:
+                            doc = fitz.open(new_filepath)
+                            page = doc[0]  # Assuming single page PDFs
+                            page.set_rotation(0)  # Explicitly set rotation to 0
+                            doc.save(new_filepath)
+                            doc.close()
                         self.current_rotation = 0
                         return True
 

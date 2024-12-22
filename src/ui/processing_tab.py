@@ -419,6 +419,16 @@ class ProcessingTab(ttk.Frame):
         self.setup_ui()
         self.update_queue_display()
         self.after(100, self._periodic_update)
+        
+        # Register for config changes
+        if hasattr(config_manager, 'add_change_callback'):
+            config_manager.add_change_callback(self.handle_config_change)
+
+    def handle_config_change(self) -> None:
+        """Handle configuration changes by reloading the current PDF if one is loaded."""
+        if self.current_pdf:
+            self.pdf_viewer.display_pdf(self.current_pdf)
+            self.update_queue_display()
 
     def setup_ui(self) -> None:
         style = ttk.Style()
