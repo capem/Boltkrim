@@ -326,23 +326,63 @@ class ProcessingTab(ttk.Frame):
             
             self.current_image = ImageTk.PhotoImage(image)
             
+            # Create frame to hold canvas and scrollbars
+            canvas_frame = ttk.Frame(self.pdf_frame)
+            canvas_frame.pack(fill='both', expand=True)
+            
             # Create scrollable canvas
             canvas = tk.Canvas(
-                self.pdf_frame,
-                width=self.current_image.width(),
-                height=self.current_image.height(),
+                canvas_frame,
+                width=min(self.current_image.width(), 800),  # Limit initial width
+                height=min(self.current_image.height(), 800),  # Limit initial height
                 bg='#f0f0f0'
             )
-            canvas.pack(fill='both', expand=True)
             
             # Add scrollbars
-            h_scrollbar = ttk.Scrollbar(self.pdf_frame, orient='horizontal', 
+            h_scrollbar = ttk.Scrollbar(canvas_frame, orient='horizontal', 
                                       command=canvas.xview)
-            v_scrollbar = ttk.Scrollbar(self.pdf_frame, orient='vertical', 
+            v_scrollbar = ttk.Scrollbar(canvas_frame, orient='vertical', 
                                       command=canvas.yview)
             
+            # Configure canvas scrolling
             canvas.configure(xscrollcommand=h_scrollbar.set, 
                            yscrollcommand=v_scrollbar.set)
+            
+            # Pack scrollbars and canvas
+            h_scrollbar.pack(side='bottom', fill='x')
+            v_scrollbar.pack(side='right', fill='y')
+            canvas.pack(side='left', fill='both', expand=True)
+            
+            def center_image():
+                """Center the image in the canvas."""
+                # Get canvas size
+                canvas_width = canvas.winfo_width()
+                canvas_height = canvas.winfo_height()
+                
+                # Calculate center position
+                x = max(0, (canvas_width - self.current_image.width()) // 2)
+                y = max(0, (canvas_height - self.current_image.height()) // 2)
+                
+                # Create image with padding for centering
+                padding_width = max(canvas_width, self.current_image.width())
+                padding_height = max(canvas_height, self.current_image.height())
+                
+                # Update canvas scrollregion with padding
+                canvas.configure(scrollregion=(
+                    -x,  # Left padding
+                    -y,  # Top padding
+                    padding_width + x,  # Right edge
+                    padding_height + y   # Bottom edge
+                ))
+                
+                # Move image to center position
+                canvas.delete("all")  # Clear any existing images
+                canvas.create_image(x, y, anchor='nw', image=self.current_image)
+            
+            def on_resize(event: tk.Event) -> None:
+                """Handle canvas resize events."""
+                if event.widget == canvas:
+                    center_image()
             
             def on_mousewheel(event: tk.Event) -> None:
                 if event.state & 4:  # Check if Ctrl key is pressed
@@ -353,13 +393,50 @@ class ProcessingTab(ttk.Frame):
                 else:
                     canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
             
+            def start_drag(event: tk.Event) -> None:
+                canvas.scan_mark(event.x, event.y)
+                canvas.configure(cursor="fleur")
+                
+            def do_drag(event: tk.Event) -> None:
+                canvas.scan_dragto(event.x, event.y, gain=1)
+                
+            def stop_drag(event: tk.Event) -> None:
+                canvas.configure(cursor="")
+                
+            def on_key(event: tk.Event) -> None:
+                key = event.keysym
+                shift_pressed = event.state & 0x1  # Check if Shift is pressed
+                
+                if key == "Up":
+                    canvas.yview_scroll(-1 * (5 if shift_pressed else 1), "units")
+                elif key == "Down":
+                    canvas.yview_scroll(1 * (5 if shift_pressed else 1), "units")
+                elif key == "Left":
+                    canvas.xview_scroll(-1 * (5 if shift_pressed else 1), "units")
+                elif key == "Right":
+                    canvas.xview_scroll(1 * (5 if shift_pressed else 1), "units")
+                elif key == "Prior":  # Page Up
+                    canvas.yview_scroll(-1, "pages")
+                elif key == "Next":  # Page Down
+                    canvas.yview_scroll(1, "pages")
+                elif key == "Home":
+                    canvas.yview_moveto(0)
+                elif key == "End":
+                    canvas.yview_moveto(1)
+            
+            # Bind events
             canvas.bind("<MouseWheel>", on_mousewheel)
+            canvas.bind("<Button-1>", start_drag)  # Left mouse button
+            canvas.bind("<B1-Motion>", do_drag)
+            canvas.bind("<ButtonRelease-1>", stop_drag)
+            canvas.bind("<Configure>", on_resize)  # Bind resize event
+            canvas.bind_all("<Key>", on_key)  # Keyboard navigation
             
-            h_scrollbar.pack(side='bottom', fill='x')
-            v_scrollbar.pack(side='right', fill='y')
+            # Initial centering (after a brief delay to ensure canvas is ready)
+            self.after(100, center_image)
             
-            canvas.create_image(0, 0, anchor='nw', image=self.current_image)
-            canvas.configure(scrollregion=canvas.bbox('all'))
+            # Set focus to canvas for keyboard navigation
+            canvas.focus_set()
             
         except Exception as e:
             ErrorDialog(self, "Error", f"Error displaying PDF: {str(e)}")
@@ -421,3 +498,10 @@ class ProcessingTab(ttk.Frame):
                 
         except Exception as e:
             ErrorDialog(self, "Error", str(e))
+            
+    def __del__(self) -> None:
+        """Clean up keyboard bindings when the tab is destroyed."""
+        try:
+            self.unbind_all("<Key>")
+        except:
+            pass
