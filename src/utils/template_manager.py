@@ -18,7 +18,7 @@ class TemplateManager:
             'lower': str.lower,
             'title': str.title,
             'replace': lambda s, old, new: s.replace(old, new),
-            'slice': lambda s, start, end: s[int(start):int(end)]
+            'slice': lambda s, start, end=None: s[int(start):None if end == '' else int(end)]
         }
     
     def _parse_field(self, field: str) -> tuple[str, list[str]]:
