@@ -262,10 +262,17 @@ class FuzzySearchFrame(ttk.Frame):
         
     def _handle_tab(self, event=None) -> None:
         """Handle Tab key press in the entry widget."""
-        if self.listbox.size() > 0:
+        if self.listbox.winfo_ismapped() and self.listbox.size() > 0:
+            # If listbox is visible and has items, select the first one
             self._select_value(self.listbox.get(0))
             
         # Move to next widget
         if event:
-            event.widget.tk_focusNext().focus()
+            next_widget = event.widget.tk_focusNext()
+            if isinstance(next_widget, ttk.Entry):
+                # If next widget is an entry, focus it directly
+                next_widget.focus_set()
+            else:
+                # Otherwise, follow normal tab order
+                event.widget.tk_focusNext().focus()
             return "break"

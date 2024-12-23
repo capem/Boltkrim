@@ -563,6 +563,34 @@ class ProcessingTab(ttk.Frame):
         self.filter1_frame.bind('<<ValueSelected>>', lambda e: self.on_filter1_select())
         self.filter2_frame.bind('<<ValueSelected>>', lambda e: self.update_confirm_button())
 
+        # Bind tab navigation
+        self.filter1_frame.entry.bind('<Tab>', self._handle_filter1_tab)
+        self.filter2_frame.entry.bind('<Tab>', self._handle_filter2_tab)
+        self.filter1_frame.listbox.bind('<Tab>', self._handle_filter1_tab)
+        self.filter2_frame.listbox.bind('<Tab>', self._handle_filter2_tab)
+
+    def _handle_filter1_tab(self, event: tk.Event) -> str:
+        """Handle tab key in filter1 to move focus to filter2."""
+        if self.filter1_frame.listbox.winfo_ismapped():
+            # If listbox is visible, select first item and move to filter2
+            if self.filter1_frame.listbox.size() > 0:
+                self.filter1_frame.listbox.selection_clear(0, tk.END)
+                self.filter1_frame.listbox.selection_set(0)
+                self.filter1_frame._on_select(None)
+        self.filter2_frame.entry.focus_set()
+        return "break"
+
+    def _handle_filter2_tab(self, event: tk.Event) -> str:
+        """Handle tab key in filter2 to move focus to next widget."""
+        if self.filter2_frame.listbox.winfo_ismapped():
+            # If listbox is visible, select first item
+            if self.filter2_frame.listbox.size() > 0:
+                self.filter2_frame.listbox.selection_clear(0, tk.END)
+                self.filter2_frame.listbox.selection_set(0)
+                self.filter2_frame._on_select(None)
+        self.confirm_button.focus_set()
+        return "break"
+
     def _setup_action_buttons(self, parent: ttk.Frame) -> None:
         actions_frame = ttk.Frame(parent)
         actions_frame.pack(fill='x', pady=(0, 10))
