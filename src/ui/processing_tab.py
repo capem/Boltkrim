@@ -1,11 +1,10 @@
 from __future__ import annotations
-import tkinter as tk
-from tkinter import ttk
-from PIL import Image, ImageTk
-import os
-from typing import Optional, Any, Dict, List, Tuple, Callable
-from queue import Queue
-from threading import Thread, Event, Lock
+from tkinter import Canvas, END, Event, Widget
+from tkinter.ttk import Frame, Scrollbar, Label, Button, Style, LabelFrame, Treeview
+from PIL.ImageTk import PhotoImage
+from os import path
+from typing import Optional, Any, Dict, List, Callable
+from threading import Thread, Lock
 from dataclasses import dataclass
 from .fuzzy_search import FuzzySearchFrame
 from .error_dialog import ErrorDialog
@@ -179,28 +178,28 @@ class ProcessingQueue:
                 pythoncom.CoUninitialize()
 
 # UI Components
-class PDFViewer(ttk.Frame):
-    def __init__(self, master: tk.Widget, pdf_manager: Any):
+class PDFViewer(Frame):
+    def __init__(self, master: Widget, pdf_manager: Any):
         super().__init__(master)
         self.pdf_manager = pdf_manager
-        self.current_image: Optional[ImageTk.PhotoImage] = None
+        self.current_image: Optional[PhotoImage] = None
         self.current_pdf: Optional[str] = None
         self.zoom_level = 1.0
         self.setup_ui()
 
     def setup_ui(self) -> None:
-        self.canvas_frame = ttk.Frame(self)
+        self.canvas_frame = Frame(self)
         self.canvas_frame.pack(fill='both', expand=True)
         
-        self.canvas = tk.Canvas(
+        self.canvas = Canvas(
             self.canvas_frame,
             bg='#f0f0f0'
         )
         
-        self.h_scrollbar = ttk.Scrollbar(self.canvas_frame, orient='horizontal',
-                                       command=self.canvas.xview)
-        self.v_scrollbar = ttk.Scrollbar(self.canvas_frame, orient='vertical',
-                                       command=self.canvas.yview)
+        self.h_scrollbar = Scrollbar(self.canvas_frame, orient='horizontal',
+                                   command=self.canvas.xview)
+        self.v_scrollbar = Scrollbar(self.canvas_frame, orient='vertical',
+                                   command=self.canvas.yview)
         
         self.canvas.configure(xscrollcommand=self.h_scrollbar.set,
                             yscrollcommand=self.v_scrollbar.set)
@@ -239,7 +238,7 @@ class PDFViewer(ttk.Frame):
         self.canvas.bind("<Configure>", self._on_resize)
         self.canvas.bind("<Key>", self._on_key)
 
-    def _on_mousewheel(self, event: tk.Event) -> None:
+    def _on_mousewheel(self, event: Event) -> None:
         if event.state & 4:  # Ctrl key
             if event.delta > 0:
                 self.zoom_in()
@@ -248,17 +247,17 @@ class PDFViewer(ttk.Frame):
         else:
             self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    def _start_drag(self, event: tk.Event) -> None:
+    def _start_drag(self, event: Event) -> None:
         self.canvas.scan_mark(event.x, event.y)
         self.canvas.configure(cursor="fleur")
 
-    def _do_drag(self, event: tk.Event) -> None:
+    def _do_drag(self, event: Event) -> None:
         self.canvas.scan_dragto(event.x, event.y, gain=1)
 
-    def _stop_drag(self, event: tk.Event) -> None:
+    def _stop_drag(self, event: Event) -> None:
         self.canvas.configure(cursor="")
 
-    def _on_key(self, event: tk.Event) -> None:
+    def _on_key(self, event: Event) -> None:
         key = event.keysym
         shift_pressed = event.state & 0x1
 
@@ -279,7 +278,7 @@ class PDFViewer(ttk.Frame):
         elif key == "End":
             self.canvas.yview_moveto(1)
 
-    def _on_resize(self, event: tk.Event) -> None:
+    def _on_resize(self, event: Event) -> None:
         if event.widget == self.canvas:
             self._center_image()
 
@@ -312,10 +311,10 @@ class PDFViewer(ttk.Frame):
             self.zoom_level = zoom
             
             for widget in self.canvas_frame.winfo_children():
-                if isinstance(widget, ttk.Label):
+                if isinstance(widget, Label):
                     widget.destroy()
             
-            loading_label = ttk.Label(self.canvas_frame, text="Loading PDF...",
+            loading_label = Label(self.canvas_frame, text="Loading PDF...",
                                     font=('Segoe UI', 10))
             loading_label.pack(pady=20)
             self.update()
@@ -323,7 +322,7 @@ class PDFViewer(ttk.Frame):
             image = self.pdf_manager.render_pdf_page(pdf_path, zoom=zoom)
             loading_label.destroy()
             
-            self.current_image = ImageTk.PhotoImage(image)
+            self.current_image = PhotoImage(image)
             self.after(100, self._center_image)
             self.canvas.focus_set()
             
@@ -340,14 +339,14 @@ class PDFViewer(ttk.Frame):
             self.zoom_level = max(0.2, self.zoom_level - step)
             self.display_pdf(self.current_pdf, self.zoom_level)
 
-class QueueDisplay(ttk.Frame):
-    def __init__(self, master: tk.Widget):
+class QueueDisplay(Frame):
+    def __init__(self, master: Widget):
         super().__init__(master)
         self.setup_ui()
 
     def setup_ui(self) -> None:
         columns = ('filename', 'status')
-        self.table = ttk.Treeview(self, columns=columns, show='headings', height=5)
+        self.table = Treeview(self, columns=columns, show='headings', height=5)
         
         self.table.heading('filename', text='File')
         self.table.heading('status', text='Status')
@@ -355,7 +354,7 @@ class QueueDisplay(ttk.Frame):
         self.table.column('filename', width=150)
         self.table.column('status', width=80)
 
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.table.yview)
+        scrollbar = Scrollbar(self, orient="vertical", command=self.table.yview)
         self.table.configure(yscrollcommand=scrollbar.set)
 
         self.table.pack(side='left', fill='both', expand=True)
@@ -366,13 +365,13 @@ class QueueDisplay(ttk.Frame):
         self.table.tag_configure('completed', foreground='green')
         self.table.tag_configure('failed', foreground='red')
 
-        btn_frame = ttk.Frame(self)
+        btn_frame = Frame(self)
         btn_frame.pack(fill='x', pady=(5, 0))
         
-        self.clear_btn = ttk.Button(btn_frame, text="Clear Completed")
+        self.clear_btn = Button(btn_frame, text="Clear Completed")
         self.clear_btn.pack(side='left', padx=2)
         
-        self.retry_btn = ttk.Button(btn_frame, text="Retry Failed")
+        self.retry_btn = Button(btn_frame, text="Retry Failed")
         self.retry_btn.pack(side='right', padx=2)
 
     def update_display(self, tasks: Dict[str, PDFTask]) -> None:
@@ -401,10 +400,10 @@ class QueueDisplay(ttk.Frame):
         for item_id in current_items.values():
             self.table.delete(item_id)
 
-class ProcessingTab(ttk.Frame):
+class ProcessingTab(Frame):
     """A tab for processing PDF files with Excel data integration."""
     
-    def __init__(self, master: tk.Widget, config_manager: Any,
+    def __init__(self, master: Widget, config_manager: Any,
                  excel_manager: Any, pdf_manager: Any) -> None:
         super().__init__(master)
         self.master = master
@@ -431,42 +430,42 @@ class ProcessingTab(ttk.Frame):
             self.update_queue_display()
 
     def setup_ui(self) -> None:
-        style = ttk.Style()
+        style = Style()
         style.configure("Action.TButton", padding=5)
         style.configure("Zoom.TButton", padding=2)
         
-        container = ttk.Frame(self)
+        container = Frame(self)
         container.pack(fill='both', expand=True, padx=20, pady=20)
         
         # Header
-        header_frame = ttk.Frame(container)
+        header_frame = Frame(container)
         header_frame.pack(fill='x', pady=(0, 10))
         
-        self.file_info = ttk.Label(header_frame, text="No file loaded",
+        self.file_info = Label(header_frame, text="No file loaded",
                                  font=('Segoe UI', 10))
         self.file_info.pack(side='left')
         
         # Content area
-        content_frame = ttk.Frame(container)
+        content_frame = Frame(container)
         content_frame.pack(fill='both', expand=True)
         
         # PDF Viewer
-        viewer_frame = ttk.LabelFrame(content_frame, text="PDF Viewer", padding=10)
+        viewer_frame = LabelFrame(content_frame, text="PDF Viewer", padding=10)
         viewer_frame.pack(side='left', fill='both', expand=True, padx=(0, 10))
         
         self.pdf_viewer = PDFViewer(viewer_frame, self.pdf_manager)
         self.pdf_viewer.pack(fill='both', expand=True)
         
         # Controls - Add scrollable frame
-        controls_outer_frame = ttk.Frame(content_frame)
+        controls_outer_frame = Frame(content_frame)
         controls_outer_frame.pack(side='right', fill='y')
         
         # Create canvas and scrollbar for controls
-        controls_canvas = tk.Canvas(controls_outer_frame, width=250)
-        controls_scrollbar = ttk.Scrollbar(controls_outer_frame, orient="vertical", command=controls_canvas.yview)
+        controls_canvas = Canvas(controls_outer_frame, width=250)
+        controls_scrollbar = Scrollbar(controls_outer_frame, orient="vertical", command=controls_canvas.yview)
         
         # Controls frame
-        controls_frame = ttk.LabelFrame(controls_canvas, text="Controls", padding=10)
+        controls_frame = LabelFrame(controls_canvas, text="Controls", padding=10)
         controls_frame.configure(width=250)
         
         # Configure canvas
@@ -508,31 +507,31 @@ class ProcessingTab(ttk.Frame):
         
         self._bind_keyboard_shortcuts()
 
-    def _setup_zoom_controls(self, parent: ttk.Frame) -> None:
-        zoom_frame = ttk.Frame(parent)
+    def _setup_zoom_controls(self, parent: Frame) -> None:
+        zoom_frame = Frame(parent)
         zoom_frame.pack(fill='x', pady=(0, 15))
         
-        ttk.Label(zoom_frame, text="Zoom:").pack(side='left')
-        ttk.Button(zoom_frame, text="−", width=3, style="Zoom.TButton",
+        Label(zoom_frame, text="Zoom:").pack(side='left')
+        Button(zoom_frame, text="−", width=3, style="Zoom.TButton",
                   command=self.pdf_viewer.zoom_out).pack(side='left', padx=2)
-        self.zoom_label = ttk.Label(zoom_frame, text="100%", width=6)
+        self.zoom_label = Label(zoom_frame, text="100%", width=6)
         self.zoom_label.pack(side='left', padx=5)
-        ttk.Button(zoom_frame, text="+", width=3, style="Zoom.TButton",
+        Button(zoom_frame, text="+", width=3, style="Zoom.TButton",
                   command=self.pdf_viewer.zoom_in).pack(side='left', padx=2)
         
-        rotation_frame = ttk.Frame(parent)
+        rotation_frame = Frame(parent)
         rotation_frame.pack(fill='x', pady=(0, 15))
         
-        ttk.Label(rotation_frame, text="Rotate:").pack(side='left')
-        ttk.Button(rotation_frame, text="↶", width=3, style="Zoom.TButton",
+        Label(rotation_frame, text="Rotate:").pack(side='left')
+        Button(rotation_frame, text="↶", width=3, style="Zoom.TButton",
                   command=self.rotate_counterclockwise).pack(side='left', padx=2)
-        self.rotation_label = ttk.Label(rotation_frame, text="0°", width=6)
+        self.rotation_label = Label(rotation_frame, text="0°", width=6)
         self.rotation_label.pack(side='left', padx=5)
-        ttk.Button(rotation_frame, text="↷", width=3, style="Zoom.TButton",
+        Button(rotation_frame, text="↷", width=3, style="Zoom.TButton",
                   command=self.rotate_clockwise).pack(side='left', padx=2)
 
-    def _setup_queue_display(self, parent: ttk.Frame) -> None:
-        queue_frame = ttk.LabelFrame(parent, text="Processing Queue", padding=10)
+    def _setup_queue_display(self, parent: Frame) -> None:
+        queue_frame = LabelFrame(parent, text="Processing Queue", padding=10)
         queue_frame.pack(fill='x', pady=(0, 15))
         
         self.queue_display = QueueDisplay(queue_frame)
@@ -542,18 +541,18 @@ class ProcessingTab(ttk.Frame):
         self.queue_display.retry_btn.configure(command=self._retry_failed)
         self.queue_display.table.bind('<Double-1>', self._show_error_details)
 
-    def _setup_filters(self, parent: ttk.Frame) -> None:
-        filters_frame = ttk.LabelFrame(parent, text="Filters", padding=10)
+    def _setup_filters(self, parent: Frame) -> None:
+        filters_frame = LabelFrame(parent, text="Filters", padding=10)
         filters_frame.pack(fill='x', pady=(0, 15))
         
-        self.filter1_label = ttk.Label(filters_frame, text="",
+        self.filter1_label = Label(filters_frame, text="",
                                      font=('Segoe UI', 9, 'bold'))
         self.filter1_label.pack(pady=(0, 5))
         self.filter1_frame = FuzzySearchFrame(filters_frame, width=30,
                                             identifier='processing_filter1')
         self.filter1_frame.pack(fill='x', pady=(0, 10))
         
-        self.filter2_label = ttk.Label(filters_frame, text="",
+        self.filter2_label = Label(filters_frame, text="",
                                      font=('Segoe UI', 9, 'bold'))
         self.filter2_label.pack(pady=(0, 5))
         self.filter2_frame = FuzzySearchFrame(filters_frame, width=30,
@@ -569,33 +568,33 @@ class ProcessingTab(ttk.Frame):
         self.filter1_frame.listbox.bind('<Tab>', self._handle_filter1_tab)
         self.filter2_frame.listbox.bind('<Tab>', self._handle_filter2_tab)
 
-    def _handle_filter1_tab(self, event: tk.Event) -> str:
+    def _handle_filter1_tab(self, event: Event) -> str:
         """Handle tab key in filter1 to move focus to filter2."""
         if self.filter1_frame.listbox.winfo_ismapped():
             # If listbox is visible, select first item and move to filter2
             if self.filter1_frame.listbox.size() > 0:
-                self.filter1_frame.listbox.selection_clear(0, tk.END)
+                self.filter1_frame.listbox.selection_clear(0, END)
                 self.filter1_frame.listbox.selection_set(0)
                 self.filter1_frame._on_select(None)
         self.filter2_frame.entry.focus_set()
         return "break"
 
-    def _handle_filter2_tab(self, event: tk.Event) -> str:
+    def _handle_filter2_tab(self, event: Event) -> str:
         """Handle tab key in filter2 to move focus to next widget."""
         if self.filter2_frame.listbox.winfo_ismapped():
             # If listbox is visible, select first item
             if self.filter2_frame.listbox.size() > 0:
-                self.filter2_frame.listbox.selection_clear(0, tk.END)
+                self.filter2_frame.listbox.selection_clear(0, END)
                 self.filter2_frame.listbox.selection_set(0)
                 self.filter2_frame._on_select(None)
         self.confirm_button.focus_set()
         return "break"
 
-    def _setup_action_buttons(self, parent: ttk.Frame) -> None:
-        actions_frame = ttk.Frame(parent)
+    def _setup_action_buttons(self, parent: Frame) -> None:
+        actions_frame = Frame(parent)
         actions_frame.pack(fill='x', pady=(0, 10))
         
-        self.confirm_button = ttk.Button(
+        self.confirm_button = Button(
             actions_frame,
             text="Process File (Enter)",
             command=self.process_current_file,
@@ -603,7 +602,7 @@ class ProcessingTab(ttk.Frame):
         )
         self.confirm_button.pack(fill='x', pady=(0, 5))
         
-        self.skip_button = ttk.Button(
+        self.skip_button = Button(
             actions_frame,
             text="Next File (Ctrl+N)",
             command=self.load_next_pdf,
@@ -635,7 +634,7 @@ class ProcessingTab(ttk.Frame):
         for key, callback in shortcuts.items():
             self.bind_all(key, callback)
 
-    def handle_return_key(self, event: tk.Event) -> str:
+    def handle_return_key(self, event: Event) -> str:
         if str(self.confirm_button['state']) != 'disabled':
             self.process_current_file()
         return "break"
@@ -704,7 +703,7 @@ class ProcessingTab(ttk.Frame):
             next_pdf = self.pdf_manager.get_next_pdf(config['source_folder'])
             if next_pdf:
                 self.current_pdf = next_pdf
-                self.file_info['text'] = os.path.basename(next_pdf)
+                self.file_info['text'] = path.basename(next_pdf)
                 self.pdf_viewer.display_pdf(next_pdf, 1.0)
                 self.rotation_label.config(text="0°")
                 self.filter1_frame.focus_set()
@@ -715,7 +714,7 @@ class ProcessingTab(ttk.Frame):
             ErrorDialog(self, "Error", f"Error loading next PDF: {str(e)}")
 
     def process_current_file(self) -> None:
-        if not self.current_pdf or not os.path.exists(self.current_pdf):
+        if not self.current_pdf or not path.exists(self.current_pdf):
             ErrorDialog(self, "Error", "No PDF file loaded")
             return
             
@@ -746,7 +745,7 @@ class ProcessingTab(ttk.Frame):
         except Exception as e:
             ErrorDialog(self, "Error", str(e))
 
-    def _show_error_details(self, event: tk.Event) -> None:
+    def _show_error_details(self, event: Event) -> None:
         item = self.queue_display.table.selection()[0]
         task_path = self.queue_display.table.item(item)['values'][0]
         
@@ -754,7 +753,7 @@ class ProcessingTab(ttk.Frame):
             task = self.pdf_queue.tasks.get(task_path)
             if task and task.status == 'failed' and task.error_msg:
                 ErrorDialog(self, "Processing Error",
-                          f"Error processing {os.path.basename(task_path)}:\n{task.error_msg}")
+                          f"Error processing {path.basename(task_path)}:\n{task.error_msg}")
 
     def _clear_completed(self) -> None:
         self.pdf_queue.clear_completed()

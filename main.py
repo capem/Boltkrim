@@ -1,12 +1,20 @@
 from __future__ import annotations
-import tkinter as tk
-from tkinter import ttk, messagebox
-from typing import Callable, Optional
+from tkinter import Tk, SUNKEN, DISABLED, NORMAL, X, BOTTOM, LEFT, RIGHT, W
+from tkinter.ttk import Notebook, Frame, Label, Button
+from tkinter.messagebox import showerror
+from typing import Optional
 from src.ui import ConfigTab, ProcessingTab
 from src.utils import ConfigManager, ExcelManager, PDFManager
 
 class FileOrganizerApp:
-    def __init__(self, root: tk.Tk) -> None:
+    """Main application class for the File Organizer application."""
+    
+    def __init__(self, root: Tk) -> None:
+        """Initialize the application.
+        
+        Args:
+            root: The root Tk window
+        """
         self.root = root
         self.root.title("File Organizer")
         self.root.state('zoomed')
@@ -28,7 +36,7 @@ class FileOrganizerApp:
     def _setup_ui(self) -> None:
         """Setup the main UI components."""
         # Create notebook for tabs
-        self.notebook = ttk.Notebook(self.root)
+        self.notebook = Notebook(self.root)
         self.notebook.pack(fill='both', expand=True, padx=5, pady=5)
         
         # Create tabs
@@ -55,24 +63,24 @@ class FileOrganizerApp:
 
     def _setup_status_bar(self) -> None:
         """Setup the status bar and retry button."""
-        self.status_frame = ttk.Frame(self.root)
-        self.status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.status_frame = Frame(self.root)
+        self.status_frame.pack(side=BOTTOM, fill=X)
         
-        self.status_bar = ttk.Label(
+        self.status_bar = Label(
             self.status_frame,
             text="Loading...",
-            relief=tk.SUNKEN,
-            anchor=tk.W
+            relief=SUNKEN,
+            anchor=W
         )
-        self.status_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.status_bar.pack(side=LEFT, fill=X, expand=True)
         
-        self.retry_button = ttk.Button(
+        self.retry_button = Button(
             self.status_frame,
             text="Retry",
             command=self.retry_load_data,
-            state=tk.DISABLED
+            state=DISABLED
         )
-        self.retry_button.pack(side=tk.RIGHT, padx=5)
+        self.retry_button.pack(side=RIGHT, padx=5)
 
     def _bind_shortcuts(self) -> None:
         """Bind keyboard shortcuts to actions."""
@@ -83,7 +91,12 @@ class FileOrganizerApp:
             self.root.bind(key, callback)
 
     def _handle_error(self, error: Exception, operation: str) -> None:
-        """Centralized error handling."""
+        """Centralized error handling.
+        
+        Args:
+            error: The exception that occurred
+            operation: Description of the operation that failed
+        """
         if "Network" in str(error):
             error_msg = "Network error: Cannot access files"
             detail_msg = "Cannot access network files. Please check your network connection and try again."
@@ -92,14 +105,14 @@ class FileOrganizerApp:
             detail_msg = str(error)
         
         self.status_bar['text'] = error_msg
-        self.retry_button.configure(state=tk.NORMAL)
-        messagebox.showerror("Error", detail_msg)
+        self.retry_button.configure(state=NORMAL)
+        showerror("Error", detail_msg)
 
     def safe_load_next_pdf(self) -> None:
         """Safely load next PDF with error handling."""
         try:
             self.processing_tab.load_next_pdf()
-            self.retry_button.configure(state=tk.DISABLED)
+            self.retry_button.configure(state=DISABLED)
             self.status_bar['text'] = "Ready"
         except Exception as e:
             self._handle_error(e, "loading PDF")
@@ -115,24 +128,25 @@ class FileOrganizerApp:
                 self.safe_load_next_pdf()
                 
             self.status_bar['text'] = "Ready"
-            self.retry_button.configure(state=tk.DISABLED)
+            self.retry_button.configure(state=DISABLED)
         except Exception as e:
             self._handle_error(e, "initial data load")
 
     def retry_load_data(self) -> None:
         """Retry loading data after an error."""
         self.status_bar['text'] = "Retrying..."
-        self.retry_button.configure(state=tk.DISABLED)
+        self.retry_button.configure(state=DISABLED)
         self.root.after(100, self.load_initial_data)
 
     def on_config_change(self) -> None:
         """Handle configuration changes."""
         self.status_bar['text'] = "Loading..."
-        self.retry_button.configure(state=tk.DISABLED)
+        self.retry_button.configure(state=DISABLED)
         self.root.after(100, self.load_initial_data)
 
 def main() -> None:
-    root = tk.Tk()
+    """Main entry point for the application."""
+    root = Tk()
     app = FileOrganizerApp(root)
     root.mainloop()
 

@@ -1,10 +1,14 @@
-import json
-import os
+from typing import Dict, List, Callable, Optional
+from json import load as json_load, dump as json_dump
+from os import path
 
 class ConfigManager:
-    def __init__(self, config_file='config.json'):
-        self.config_file = config_file
-        self.default_config = {
+    """Manages configuration settings for the application with file persistence and change notifications."""
+    
+    def __init__(self, config_file: str = 'config.json') -> None:
+        """Initialize the config manager with a default or specified config file."""
+        self.config_file: str = config_file
+        self.default_config: Dict[str, str] = {
             'source_folder': '',
             'processed_folder': '',
             'excel_file': '',
@@ -13,20 +17,28 @@ class ConfigManager:
             'filter2_column': '',
             'output_template': '{processed_folder}/{filter1|str.upper} - {filter2|str.upper}.pdf'
         }
-        self.config = self.default_config.copy()
-        self.change_callbacks = []
+        self.config: Dict[str, str] = self.default_config.copy()
+        self.change_callbacks: List[Callable[[], None]] = []
         
-    def add_change_callback(self, callback):
-        """Add a callback to be called when config changes."""
+    def add_change_callback(self, callback: Callable[[], None]) -> None:
+        """Add a callback to be called when config changes.
+        
+        Args:
+            callback: A function taking no arguments and returning nothing
+        """
         if callback not in self.change_callbacks:
             self.change_callbacks.append(callback)
             
-    def remove_change_callback(self, callback):
-        """Remove a previously added callback."""
+    def remove_change_callback(self, callback: Callable[[], None]) -> None:
+        """Remove a previously added callback.
+        
+        Args:
+            callback: The callback function to remove
+        """
         if callback in self.change_callbacks:
             self.change_callbacks.remove(callback)
             
-    def _notify_callbacks(self):
+    def _notify_callbacks(self) -> None:
         """Notify all registered callbacks about config changes."""
         for callback in self.change_callbacks:
             try:
@@ -34,12 +46,15 @@ class ConfigManager:
             except Exception as e:
                 print(f"Error in config change callback: {str(e)}")
         
-    def load_config(self):
-        """Load configuration from file."""
+    def load_config(self) -> None:
+        """Load configuration from file.
+        
+        If the file doesn't exist or there's an error, keeps default values.
+        """
         try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, 'r') as f:
-                    loaded_config = json.load(f)
+            if path.exists(self.config_file):
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    loaded_config: Dict[str, str] = json_load(f)
                     # Update config with loaded values, keeping defaults for missing keys
                     self.config.update(loaded_config)
         except Exception as e:
@@ -47,25 +62,36 @@ class ConfigManager:
             # Keep default values if loading fails
             self.config = self.default_config.copy()
             
-    def save_config(self):
-        """Save current configuration to file."""
+    def save_config(self) -> None:
+        """Save current configuration to file.
+        
+        Creates the file if it doesn't exist, overwrites if it does.
+        """
         try:
-            with open(self.config_file, 'w') as f:
-                json.dump(self.config, f, indent=4)
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json_dump(self.config, f, indent=4)
         except Exception as e:
             print(f"Error saving config: {str(e)}")
             
-    def update_config(self, new_values):
-        """Update configuration with new values."""
+    def update_config(self, new_values: Dict[str, str]) -> None:
+        """Update configuration with new values.
+        
+        Args:
+            new_values: Dictionary of new configuration values to update
+        """
         self.config.update(new_values)
         self.save_config()
         self._notify_callbacks()
         
-    def get_config(self):
-        """Get current configuration."""
+    def get_config(self) -> Dict[str, str]:
+        """Get current configuration.
+        
+        Returns:
+            A copy of the current configuration dictionary
+        """
         return self.config.copy()
         
-    def reset_config(self):
+    def reset_config(self) -> None:
         """Reset configuration to defaults."""
         self.config = self.default_config.copy()
         self.save_config()

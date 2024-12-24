@@ -1,21 +1,28 @@
-import pandas as pd
-import win32com.client
-import shutil
-import time
-import os
-from datetime import datetime
-import socket
+from pandas import read_excel, ExcelFile, DataFrame, Series
+from win32com.client import Dispatch
+from shutil import copy2
+from os import path, remove
+from socket import socket, AF_INET, SOCK_STREAM, getdefaulttimeout, setdefaulttimeout, timeout
+from typing import Optional, List, Tuple
 
-def is_path_available(path, timeout=2):
-    """Check if a network path is available with timeout."""
-    if not path.startswith('\\\\'): # Not a network path
-        return os.path.exists(path)
+def is_path_available(filepath: str, timeout: int = 2) -> bool:
+    """Check if a network path is available with timeout.
+    
+    Args:
+        filepath: The path to check
+        timeout: Connection timeout in seconds
+        
+    Returns:
+        bool: True if path is available, False otherwise
+    """
+    if not filepath.startswith('\\\\'): # Not a network path
+        return path.exists(filepath)
         
     try:
         # Extract server name from UNC path
-        server = path.split('\\')[2]
+        server = filepath.split('\\')[2]
         # Try to connect to the server
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket(AF_INET, SOCK_STREAM)
         sock.settimeout(timeout)
         sock.connect((server, 445))  # 445 is the SMB port
         sock.close()
@@ -25,14 +32,14 @@ def is_path_available(path, timeout=2):
 
 class ExcelManager:
     def __init__(self):
-        self.excel_data = None
+        self.excel_data: Optional[DataFrame] = None
         self.excel_app = None
         self._cached_file = None
         self._cached_sheet = None
         self._last_modified = None
         self._network_timeout = 5  # 5 seconds timeout for network operations
         
-    def load_excel_data(self, excel_file, sheet_name):
+    def load_excel_data(self, excel_file: str, sheet_name: str) -> bool:
         """Load data from Excel file with caching."""
         try:
             # Check network path availability first
@@ -41,7 +48,7 @@ class ExcelManager:
                 
             # Check if we need to reload
             try:
-                current_modified = os.path.getmtime(excel_file) if os.path.exists(excel_file) else None
+                current_modified = path.getmtime(excel_file) if path.exists(excel_file) else None
             except OSError:
                 current_modified = None  # Handle network errors for file stat
             
@@ -52,15 +59,15 @@ class ExcelManager:
                 return True  # Use cached data
                 
             # Load new data with timeout
-            original_timeout = socket.getdefaulttimeout()
-            socket.setdefaulttimeout(self._network_timeout)
+            original_timeout = getdefaulttimeout()
+            setdefaulttimeout(self._network_timeout)
             try:
-                self.excel_data = pd.read_excel(
+                self.excel_data = read_excel(
                     excel_file,
                     sheet_name=sheet_name
                 )
             finally:
-                socket.setdefaulttimeout(original_timeout)
+                setdefaulttimeout(original_timeout)
             
             # Update cache info
             self._cached_file = excel_file
@@ -69,45 +76,45 @@ class ExcelManager:
             
             return True
         except Exception as e:
-            if isinstance(e, socket.timeout):
+            if isinstance(e, timeout):
                 raise Exception("Network timeout while accessing Excel file")
             raise Exception(f"Error loading Excel data: {str(e)}")
             
-    def get_sheet_names(self, excel_file):
+    def get_sheet_names(self, excel_file: str) -> List[str]:
         """Get list of sheet names from Excel file."""
         try:
             if not is_path_available(excel_file):
                 raise Exception("Network path is not available")
                 
-            original_timeout = socket.getdefaulttimeout()
-            socket.setdefaulttimeout(self._network_timeout)
+            original_timeout = getdefaulttimeout()
+            setdefaulttimeout(self._network_timeout)
             try:
-                xl = pd.ExcelFile(excel_file)
+                xl = ExcelFile(excel_file)
                 return xl.sheet_names
             finally:
-                socket.setdefaulttimeout(original_timeout)
+                setdefaulttimeout(original_timeout)
         except Exception as e:
-            if isinstance(e, socket.timeout):
+            if isinstance(e, timeout):
                 raise Exception("Network timeout while accessing Excel file")
             raise Exception(f"Error reading Excel sheets: {str(e)}")
             
-    def get_column_names(self):
+    def get_column_names(self) -> List[str]:
         """Get list of column names from loaded Excel data."""
         if self.excel_data is None:
             return []
-        return self.excel_data.columns.tolist()
+        return list(self.excel_data.columns)
         
-    def update_pdf_link(self, excel_file, sheet_name, row_idx, pdf_path):
+    def update_pdf_link(self, excel_file: str, sheet_name: str, row_idx: int, pdf_path: str) -> None:
         """Update Excel with PDF link."""
         try:
             # Create backup of the Excel file
             backup_file = excel_file + '.bak'
-            shutil.copy2(excel_file, backup_file)
+            copy2(excel_file, backup_file)
             
             try:
                 # Initialize Excel application
                 if self.excel_app is None:
-                    self.excel_app = win32com.client.Dispatch("Excel.Application")
+                    self.excel_app = Dispatch("Excel.Application")
                     self.excel_app.Visible = False
                     self.excel_app.DisplayAlerts = False
                 
@@ -126,9 +133,9 @@ class ExcelManager:
                     raise Exception("FACTURES column not found in Excel sheet")
                 
                 # Create relative path for Excel link
-                rel_path = os.path.relpath(
+                rel_path = path.relpath(
                     pdf_path,
-                    os.path.dirname(excel_file)
+                    path.dirname(excel_file)
                 )
                 
                 # Get the cell and add hyperlink
@@ -151,40 +158,40 @@ class ExcelManager:
                 wb.Close()
                 
                 # Delete backup if everything succeeded
-                if os.path.exists(backup_file):
-                    os.remove(backup_file)
+                if path.exists(backup_file):
+                    remove(backup_file)
                     
             except Exception as e:
                 # Restore from backup if something went wrong
-                if os.path.exists(backup_file):
-                    shutil.copy2(backup_file, excel_file)
+                if path.exists(backup_file):
+                    copy2(backup_file, excel_file)
                 raise e
                 
             finally:
                 # Clean up
-                if os.path.exists(backup_file):
+                if path.exists(backup_file):
                     try:
-                        os.remove(backup_file)
+                        remove(backup_file)
                     except:
                         pass
                         
         except Exception as e:
             raise Exception(f"Error updating Excel with PDF link: {str(e)}")
             
-    def find_matching_row(self, filter1_col, filter2_col, value1, value2):
+    def find_matching_row(self, filter1_col: str, filter2_col: str, value1: str, value2: str) -> Tuple[Optional[Series], Optional[int]]:
         """Find row matching the filter values."""
         if self.excel_data is None:
-            return None
+            return None, None
             
         mask = (self.excel_data[filter1_col] == value1) & \
                (self.excel_data[filter2_col] == value2)
                
         if not mask.any():
-            return None
+            return None, None
             
         return self.excel_data[mask].iloc[0], mask.idxmax()
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Cleanup Excel application on object destruction"""
         if self.excel_app:
             try:

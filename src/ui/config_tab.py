@@ -1,4 +1,4 @@
-import tkinter as tk
+from tkinter import LEFT, END
 from tkinter import ttk, filedialog
 from .fuzzy_search import FuzzySearchFrame
 
@@ -136,7 +136,7 @@ class ConfigTab(ttk.Frame):
             "• Slice: {field|str.slice:0:4}"
         )
         
-        help_label = ttk.Label(template_frame, text=help_text, justify=tk.LEFT)
+        help_label = ttk.Label(template_frame, text=help_text, justify=LEFT)
         help_label.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0,5))
         
         # Template Entry
@@ -187,14 +187,14 @@ class ConfigTab(ttk.Frame):
         """Open dialog to select source folder."""
         folder = filedialog.askdirectory()
         if folder:
-            self.source_folder_entry.delete(0, tk.END)
+            self.source_folder_entry.delete(0, END)
             self.source_folder_entry.insert(0, folder)
             
     def select_processed_folder(self):
         """Open dialog to select processed folder."""
         folder = filedialog.askdirectory()
         if folder:
-            self.processed_folder_entry.delete(0, tk.END)
+            self.processed_folder_entry.delete(0, END)
             self.processed_folder_entry.insert(0, folder)
             
     def select_excel_file(self):
@@ -202,7 +202,7 @@ class ConfigTab(ttk.Frame):
         file = filedialog.askopenfilename(
             filetypes=[("Excel files", "*.xlsx;*.xls")])
         if file:
-            self.excel_file_entry.delete(0, tk.END)
+            self.excel_file_entry.delete(0, END)
             self.excel_file_entry.insert(0, file)
             self.update_sheet_list()
             

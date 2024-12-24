@@ -1,19 +1,19 @@
 from datetime import datetime
-import re
-from typing import Any, Dict, Optional
+from re import sub, Match
+from typing import Any, Dict, Optional, Callable, Union
 
 class TemplateManager:
     """Manages template parsing and processing with support for various operations."""
     
-    def __init__(self):
-        self.date_operations = {
+    def __init__(self) -> None:
+        self.date_operations: Dict[str, Callable] = {
             'year': lambda dt: dt.strftime('%Y'),
             'month': lambda dt: dt.strftime('%m'),
             'year_month': lambda dt: dt.strftime('%Y-%m'),
             'format': lambda dt, fmt: dt.strftime(fmt.replace('%', ''))
         }
         
-        self.string_operations = {
+        self.string_operations: Dict[str, Callable] = {
             'upper': str.upper,
             'lower': str.lower,
             'title': str.title,
@@ -22,14 +22,32 @@ class TemplateManager:
         }
     
     def _parse_field(self, field: str) -> tuple[str, list[str]]:
-        """Parse a field into its name and operations."""
+        """Parse a field into its name and operations.
+        
+        Args:
+            field: The field string to parse
+            
+        Returns:
+            A tuple containing the field name and list of operations
+        """
         parts = field.split('|')
         field_name = parts[0].strip()
         operations = parts[1:] if len(parts) > 1 else []
         return field_name, operations
     
     def _apply_date_operation(self, date_value: datetime, operation: str) -> str:
-        """Apply a date operation to a datetime value."""
+        """Apply a date operation to a datetime value.
+        
+        Args:
+            date_value: The datetime value to operate on
+            operation: The operation string to apply
+            
+        Returns:
+            The result of applying the date operation
+            
+        Raises:
+            ValueError: If the operation format is invalid or unknown
+        """
         op_parts = operation.split('.')
         if len(op_parts) != 2:
             raise ValueError(f"Invalid date operation format: {operation}")
@@ -46,7 +64,18 @@ class TemplateManager:
             return self.date_operations[op_type](date_value)
     
     def _apply_string_operation(self, value: str, operation: str) -> str:
-        """Apply a string operation to a value."""
+        """Apply a string operation to a value.
+        
+        Args:
+            value: The string value to operate on
+            operation: The operation string to apply
+            
+        Returns:
+            The result of applying the string operation
+            
+        Raises:
+            ValueError: If the operation format is invalid or unknown
+        """
         op_parts = operation.split('.')
         if len(op_parts) != 2:
             raise ValueError(f"Invalid string operation format: {operation}")
@@ -63,7 +92,18 @@ class TemplateManager:
             return self.string_operations[op_type](value)
     
     def _apply_operations(self, value: Any, operations: list[str]) -> str:
-        """Apply a sequence of operations to a value."""
+        """Apply a sequence of operations to a value.
+        
+        Args:
+            value: The value to operate on
+            operations: List of operations to apply
+            
+        Returns:
+            The result of applying all operations in sequence
+            
+        Raises:
+            ValueError: If an operation type is unknown or invalid for the value type
+        """
         result = value
         for operation in operations:
             if operation.startswith('date.'):
@@ -77,8 +117,7 @@ class TemplateManager:
         return str(result)
     
     def process_template(self, template: str, data: Dict[str, Any]) -> str:
-        """
-        Process a template string using the provided data.
+        """Process a template string using the provided data.
         
         Args:
             template: The template string containing fields and operations
@@ -86,8 +125,11 @@ class TemplateManager:
             
         Returns:
             The processed template with all fields replaced with their processed values
+            
+        Raises:
+            ValueError: If a field is not found in the data or an operation fails
         """
-        def replace_field(match: re.Match) -> str:
+        def replace_field(match: Match) -> str:
             field_content = match.group(1)
             field_name, operations = self._parse_field(field_content)
             
@@ -98,4 +140,4 @@ class TemplateManager:
             return self._apply_operations(value, operations)
         
         pattern = r'\{([^}]+)\}'
-        return re.sub(pattern, replace_field, template)
+        return sub(pattern, replace_field, template)

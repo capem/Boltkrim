@@ -1,8 +1,9 @@
-import tkinter as tk
-from tkinter import ttk
+from tkinter import END, SINGLE, Widget, Event, Listbox
+from tkinter.ttk import Frame, Entry, Scrollbar
 from difflib import SequenceMatcher
+from typing import List, Optional, Any
 
-class FuzzySearchFrame(ttk.Frame):
+class FuzzySearchFrame(Frame):
     """A frame that provides fuzzy search functionality with a text entry and listbox.
     
     This widget allows users to search through a list of values using fuzzy matching,
@@ -11,11 +12,11 @@ class FuzzySearchFrame(ttk.Frame):
     
     def __init__(
         self,
-        master: tk.Widget,
-        values: list[str] | None = None,
+        master: Widget,
+        values: Optional[List[str]] = None,
         search_threshold: int = 65,
-        identifier: str | None = None,
-        **kwargs
+        identifier: Optional[str] = None,
+        **kwargs: Any
     ) -> None:
         super().__init__(master, **kwargs)
         
@@ -26,7 +27,7 @@ class FuzzySearchFrame(ttk.Frame):
         # Remove debouncing since we want instantaneous results
         self._prev_value = ''
         self._ignore_next_keyrelease = False
-        self._focus_after_id = None
+        self._focus_after_id: Optional[str] = None
         
         self._create_widgets()
         self._bind_events()
@@ -37,7 +38,7 @@ class FuzzySearchFrame(ttk.Frame):
     def _create_widgets(self) -> None:
         """Create and configure all child widgets."""
         # Entry widget
-        self.entry = ttk.Entry(self)
+        self.entry = Entry(self)
         self.entry.pack(fill='x', padx=2, pady=2)
         
         # Bind focus-related events
@@ -45,20 +46,20 @@ class FuzzySearchFrame(ttk.Frame):
         self.entry.bind('<FocusOut>', self._on_focus_out)
         
         # Listbox frame with scrollbar
-        listbox_frame = ttk.Frame(self)
+        listbox_frame = Frame(self)
         listbox_frame.pack(fill='both', expand=True, padx=2)
         
         # Listbox
-        self.listbox = tk.Listbox(
+        self.listbox = Listbox(
             listbox_frame,
             height=5,
             exportselection=False,
-            selectmode=tk.SINGLE
+            selectmode=SINGLE
         )
         self.listbox.pack(side='left', fill='both', expand=True)
         
         # Scrollbar
-        scrollbar = ttk.Scrollbar(
+        scrollbar = Scrollbar(
             listbox_frame,
             orient='vertical',
             command=self.listbox.yview
@@ -67,14 +68,14 @@ class FuzzySearchFrame(ttk.Frame):
         self.listbox.configure(yscrollcommand=scrollbar.set)
         
         # Configure mousewheel scrolling
-        def _on_mousewheel(event):
+        def _on_mousewheel(event: Event) -> str:
             self.listbox.yview_scroll(int(-1 * (event.delta / 120)), "units")
             return "break"
         
-        def _bind_mousewheel(event):
+        def _bind_mousewheel(event: Event) -> None:
             self.listbox.bind_all("<MouseWheel>", _on_mousewheel)
             
-        def _unbind_mousewheel(event):
+        def _unbind_mousewheel(event: Event) -> None:
             self.listbox.unbind_all("<MouseWheel>")
         
         # Bind mousewheel only when mouse is over the listbox area
@@ -93,10 +94,10 @@ class FuzzySearchFrame(ttk.Frame):
         self.entry.bind('<Down>', lambda e: self._focus_listbox())
         self.entry.bind('<Tab>', self._handle_tab)
         
-    def set_values(self, values: list[str] | None) -> None:
+    def set_values(self, values: Optional[List[str]]) -> None:
         """Update the list of searchable values."""
         self.all_values = [str(v) for v in (values or []) if v is not None]
-        self.entry.delete(0, tk.END)
+        self.entry.delete(0, END)
         self._update_listbox()
         
     def get(self) -> str:
@@ -105,10 +106,10 @@ class FuzzySearchFrame(ttk.Frame):
         
     def set(self, value: str) -> None:
         """Set the entry text."""
-        self.entry.delete(0, tk.END)
+        self.entry.delete(0, END)
         self.entry.insert(0, str(value))
         
-    def _on_keyrelease(self, event: tk.Event) -> None:
+    def _on_keyrelease(self, event: Event) -> None:
         """Handle key release events in the entry widget."""
         if self._ignore_next_keyrelease:
             self._ignore_next_keyrelease = False
@@ -122,19 +123,19 @@ class FuzzySearchFrame(ttk.Frame):
         current_value = self.entry.get().strip()
         
         # Clear current listbox
-        self.listbox.delete(0, tk.END)
+        self.listbox.delete(0, END)
         
         # If empty, show all values
         if not current_value:
             for value in self.all_values:
-                self.listbox.insert(tk.END, value)
+                self.listbox.insert(END, value)
             return
             
         try:
             search_lower = current_value.lower()
             
             # Calculate scores for all values
-            scored_matches = []
+            scored_matches: List[tuple[int, str]] = []
             for value in self.all_values:
                 value_lower = value.lower()
                 score = 0
@@ -168,16 +169,16 @@ class FuzzySearchFrame(ttk.Frame):
             scored_matches.sort(reverse=True, key=lambda x: (x[0], -len(x[1])))
             
             for _, value in scored_matches:
-                self.listbox.insert(tk.END, value)
+                self.listbox.insert(END, value)
                 
         except Exception as e:
             print(f"Error in fuzzy search ({self.identifier}): {str(e)}")
             # Fall back to simple substring matching
             for value in self.all_values:
                 if current_value.lower() in value.lower():
-                    self.listbox.insert(tk.END, value)
+                    self.listbox.insert(END, value)
                     
-    def _on_select(self, event: tk.Event) -> None:
+    def _on_select(self, event: Event) -> None:
         """Handle selection events in the listbox."""
         if not self.listbox.size():  # If listbox is empty, do nothing
             return
@@ -203,7 +204,7 @@ class FuzzySearchFrame(ttk.Frame):
         """Move focus to the listbox when Down arrow is pressed."""
         if self.listbox.size() > 0:
             # Clear any existing selection
-            self.listbox.selection_clear(0, tk.END)
+            self.listbox.selection_clear(0, END)
             # Set both selection and active item to first item
             self.listbox.selection_set(0)
             self.listbox.activate(0)
@@ -215,9 +216,9 @@ class FuzzySearchFrame(ttk.Frame):
             self.listbox.bind('<Down>', self._on_listbox_arrow)
             self.listbox.bind('<Tab>', self._on_listbox_tab)
             
-    def _on_listbox_tab(self, event) -> None:
+    def _on_listbox_tab(self, event: Event) -> str:
         """Handle Tab key when pressed in the listbox."""
-        active = self.listbox.index(tk.ACTIVE)
+        active = self.listbox.index('active')
         if active >= 0:
             value = self.listbox.get(active)
             self._select_value(value)
@@ -225,17 +226,17 @@ class FuzzySearchFrame(ttk.Frame):
             event.widget.tk_focusNext().focus()
         return 'break'
             
-    def _on_listbox_arrow(self, event) -> None:
+    def _on_listbox_arrow(self, event: Event) -> str:
         """Handle up/down arrow keys in listbox to maintain selection."""
-        if event.keysym == 'Up' and self.listbox.index(tk.ACTIVE) > 0:
-            new_index = self.listbox.index(tk.ACTIVE) - 1
-            self.listbox.selection_clear(0, tk.END)
+        if event.keysym == 'Up' and self.listbox.index('active') > 0:
+            new_index = self.listbox.index('active') - 1
+            self.listbox.selection_clear(0, END)
             self.listbox.selection_set(new_index)
             self.listbox.activate(new_index)
             self.listbox.see(new_index)
-        elif event.keysym == 'Down' and self.listbox.index(tk.ACTIVE) < self.listbox.size() - 1:
-            new_index = self.listbox.index(tk.ACTIVE) + 1
-            self.listbox.selection_clear(0, tk.END)
+        elif event.keysym == 'Down' and self.listbox.index('active') < self.listbox.size() - 1:
+            new_index = self.listbox.index('active') + 1
+            self.listbox.selection_clear(0, END)
             self.listbox.selection_set(new_index)
             self.listbox.activate(new_index)
             self.listbox.see(new_index)
@@ -248,19 +249,19 @@ class FuzzySearchFrame(ttk.Frame):
             # Schedule another check
             self._focus_after_id = self.after(100, self._ensure_focus)
             
-    def _on_focus_in(self, event=None) -> None:
+    def _on_focus_in(self, event: Optional[Event] = None) -> None:
         """Handle focus-in event."""
         if self._focus_after_id:
             self.after_cancel(self._focus_after_id)
             self._focus_after_id = None
             
-    def _on_focus_out(self, event=None) -> None:
+    def _on_focus_out(self, event: Optional[Event] = None) -> None:
         """Handle focus-out event."""
         # If we lose focus, try to get it back after a short delay
         # This helps with the initial focus issues
         self._focus_after_id = self.after(100, self._ensure_focus)
         
-    def _handle_tab(self, event=None) -> None:
+    def _handle_tab(self, event: Optional[Event] = None) -> Optional[str]:
         """Handle Tab key press in the entry widget."""
         if self.listbox.winfo_ismapped() and self.listbox.size() > 0:
             # If listbox is visible and has items, select the first one
@@ -269,10 +270,11 @@ class FuzzySearchFrame(ttk.Frame):
         # Move to next widget
         if event:
             next_widget = event.widget.tk_focusNext()
-            if isinstance(next_widget, ttk.Entry):
+            if isinstance(next_widget, Entry):
                 # If next widget is an entry, focus it directly
                 next_widget.focus_set()
             else:
                 # Otherwise, follow normal tab order
                 event.widget.tk_focusNext().focus()
             return "break"
+        return None

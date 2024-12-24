@@ -1,28 +1,31 @@
-import os
-import shutil
-import tempfile
-import fitz  # PyMuPDF
-from PIL import Image
-import io
-import time
-import socket
+from os import path, makedirs, remove
+from os import listdir as os_listdir
+from shutil import copy2
+from tempfile import TemporaryDirectory
+from io import BytesIO
+from time import sleep, time
+from socket import timeout as SocketTimeout, getdefaulttimeout, setdefaulttimeout
+from fitz import open as fitz_open, Matrix
+from PIL.Image import open as pil_open
 from datetime import datetime
-from .excel_manager import is_path_available  # Reuse the network check function
+from typing import List, Optional, Dict, Any
+from win32file import MoveFileEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_COPY_ALLOWED
+from .excel_manager import is_path_available
 from .template_manager import TemplateManager
 
 class PDFManager:
-    def __init__(self):
-        self.current_file_index = -1
-        self.current_file_list = []
-        self.cached_pdf = None
-        self.cached_pdf_path = None
-        self._cached_source_folder = None
-        self._last_refresh_time = 0
-        self._refresh_interval = 5  # Refresh file list every 5 seconds
-        self._network_timeout = 5  # 5 seconds timeout for network operations
-        self._max_retries = 3  # Maximum number of retries for file operations
-        self._retry_delay = 1  # Initial retry delay in seconds
-        self.current_rotation = 0  # Track current rotation (0, 90, 180, 270)
+    def __init__(self) -> None:
+        self.current_file_index: int = -1
+        self.current_file_list: List[str] = []
+        self.cached_pdf: Optional[Any] = None
+        self.cached_pdf_path: Optional[str] = None
+        self._cached_source_folder: Optional[str] = None
+        self._last_refresh_time: float = 0
+        self._refresh_interval: int = 5  # Refresh file list every 5 seconds
+        self._network_timeout: int = 5  # 5 seconds timeout for network operations
+        self._max_retries: int = 3  # Maximum number of retries for file operations
+        self._retry_delay: int = 1  # Initial retry delay in seconds
+        self.current_rotation: int = 0  # Track current rotation (0, 90, 180, 270)
         self.template_manager = TemplateManager()
 
     def generate_output_path(self, template, data):
@@ -55,24 +58,24 @@ class PDFManager:
             filepath = self.template_manager.process_template(template, sanitized_data)
             
             # Ensure the path is properly formatted
-            filepath = os.path.normpath(filepath)
+            filepath = path.normpath(filepath)
             
             # Create directory structure if it doesn't exist
-            directory = os.path.dirname(filepath)
-            if directory and not os.path.exists(directory):
-                os.makedirs(directory, exist_ok=True)
+            directory = path.dirname(filepath)
+            if directory and not path.exists(directory):
+                makedirs(directory, exist_ok=True)
             
             return filepath
         except Exception as e:
             raise Exception(f"Error generating output path: {str(e)}")
 
-    def process_pdf(self, current_pdf, template_data, processed_folder, output_template):
+    def process_pdf(self, current_pdf: str, template_data: Dict[str, Any], processed_folder: str, output_template: str) -> bool:
         """Process a PDF file using template-based naming."""
-        if not os.path.exists(current_pdf):
+        if not path.exists(current_pdf):
             raise Exception("Source PDF file not found")
             
-        if not os.path.exists(processed_folder):
-            os.makedirs(processed_folder)
+        if not path.exists(processed_folder):
+            makedirs(processed_folder)
 
         # Add processed_folder to template data
         template_data['processed_folder'] = processed_folder
@@ -92,26 +95,26 @@ class PDFManager:
         while retry_count < self._max_retries:
             try:
                 # Create temporary directory for atomic operations
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_pdf = os.path.join(temp_dir, "original.pdf")
-                    rotated_pdf = os.path.join(temp_dir, "rotated.pdf")
+                with TemporaryDirectory() as temp_dir:
+                    temp_pdf = path.join(temp_dir, "original.pdf")
+                    rotated_pdf = path.join(temp_dir, "rotated.pdf")
                     
                     # Try to copy with multiple retries
                     copy_success = False
                     for _ in range(3):
                         try:
-                            shutil.copy2(current_pdf, temp_pdf)
+                            copy2(current_pdf, temp_pdf)
                             copy_success = True
                             break
                         except PermissionError:
-                            time.sleep(delay)
+                            sleep(delay)
                     
                     if not copy_success:
                         raise Exception("Failed to create backup copy after multiple attempts")
 
                     # Apply rotation if needed
                     if self.current_rotation != 0:
-                        doc = fitz.open(temp_pdf)
+                        doc = fitz_open(temp_pdf)
                         page = doc[0]  # Assuming single page PDFs
                         page.set_rotation(self.current_rotation)
                         doc.save(rotated_pdf)
@@ -120,31 +123,24 @@ class PDFManager:
 
                     try:
                         # Ensure target directory exists
-                        os.makedirs(os.path.dirname(new_filepath), exist_ok=True)
+                        makedirs(path.dirname(new_filepath), exist_ok=True)
                         
                         # Try to move the file
-                        if os.path.exists(new_filepath):
-                            os.remove(new_filepath)
+                        if path.exists(new_filepath):
+                            remove(new_filepath)
                         
-                        # Use windows-specific move operation if available
-                        try:
-                            import win32file
-                            win32file.MoveFileEx(
-                                temp_pdf,
-                                new_filepath,
-                                win32file.MOVEFILE_REPLACE_EXISTING | 
-                                win32file.MOVEFILE_COPY_ALLOWED
-                            )
-                            # Explicitly remove the source file after successful move
-                            os.remove(current_pdf)
-                        except ImportError:
-                            # Fallback to os.replace if win32file is not available
-                            shutil.copy2(temp_pdf, new_filepath)
-                            os.remove(current_pdf)
+                        # Use windows-specific move operation
+                        MoveFileEx(
+                            temp_pdf,
+                            new_filepath,
+                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED
+                        )
+                        # Explicitly remove the source file after successful move
+                        remove(current_pdf)
                         
                         # Reset rotation after successful processing
                         if self.current_rotation != 0:
-                            doc = fitz.open(new_filepath)
+                            doc = fitz_open(new_filepath)
                             page = doc[0]  # Assuming single page PDFs
                             page.set_rotation(0)  # Explicitly set rotation to 0
                             doc.save(new_filepath)
@@ -154,12 +150,12 @@ class PDFManager:
 
                     except Exception as move_error:
                         # Restore file from backup if operation fails
-                        if os.path.exists(new_filepath):
+                        if path.exists(new_filepath):
                             try:
-                                os.remove(new_filepath)
+                                remove(new_filepath)
                             except:
                                 pass
-                        shutil.copy2(temp_pdf, current_pdf)
+                        copy2(temp_pdf, current_pdf)
                         raise move_error
 
             except (PermissionError, OSError) as e:
@@ -168,7 +164,7 @@ class PDFManager:
                     raise Exception(f"Failed to process PDF after {self._max_retries} attempts: {str(e)}")
                 
                 # Exponential backoff
-                time.sleep(delay)
+                sleep(delay)
                 delay *= 2
             except Exception as e:
                 # Don't retry other types of errors
@@ -176,13 +172,13 @@ class PDFManager:
 
         raise Exception("Failed to process PDF after exhausting all retries")
 
-    def get_next_pdf(self, source_folder):
+    def get_next_pdf(self, source_folder: str) -> Optional[str]:
         """Get the next PDF file from the source folder."""
         try:
             if not is_path_available(source_folder):
                 raise Exception("Network path is not available")
                 
-            current_time = time.time()
+            current_time = time()
             
             # Only refresh file list if source folder changed or refresh interval passed
             if (source_folder != self._cached_source_folder or 
@@ -190,20 +186,20 @@ class PDFManager:
                 
                 # Get list of PDF files
                 try:
-                    original_timeout = socket.getdefaulttimeout()
-                    socket.setdefaulttimeout(self._network_timeout)
+                    original_timeout = getdefaulttimeout()
+                    setdefaulttimeout(self._network_timeout)
                     try:
                         pdf_files = sorted([
-                            f for f in os.listdir(source_folder)
+                            f for f in os_listdir(source_folder)
                             if f.lower().endswith('.pdf')
                         ])
                         self.current_file_list = pdf_files
                         self._cached_source_folder = source_folder
                         self._last_refresh_time = current_time
                     finally:
-                        socket.setdefaulttimeout(original_timeout)
+                        setdefaulttimeout(original_timeout)
                 except Exception as e:
-                    if isinstance(e, socket.timeout):
+                    if isinstance(e, SocketTimeout):
                         raise Exception("Network timeout while accessing PDF folder")
                     raise Exception(f"Error reading source folder: {str(e)}")
             
@@ -220,7 +216,7 @@ class PDFManager:
                 
             # Return full path of next PDF
             if self.current_file_list:
-                next_pdf = os.path.join(source_folder, self.current_file_list[self.current_file_index])
+                next_pdf = path.join(source_folder, self.current_file_list[self.current_file_index])
                 # Clear cache if different file
                 if next_pdf != self.cached_pdf_path:
                     self.clear_cache()
@@ -254,7 +250,7 @@ class PDFManager:
         """Get the current rotation angle."""
         return self.current_rotation
         
-    def render_pdf_page(self, pdf_path, page_num=0, zoom=1.0):
+    def render_pdf_page(self, pdf_path: str, page_num: int = 0, zoom: float = 1.0) -> Any:
         """Render a PDF page as a PhotoImage."""
         try:
             if not is_path_available(pdf_path):
@@ -263,13 +259,13 @@ class PDFManager:
             # Use cached document or open new one
             if pdf_path != self.cached_pdf_path:
                 self.clear_cache()
-                original_timeout = socket.getdefaulttimeout()
-                socket.setdefaulttimeout(self._network_timeout)
+                original_timeout = getdefaulttimeout()
+                setdefaulttimeout(self._network_timeout)
                 try:
-                    self.cached_pdf = fitz.open(pdf_path)
+                    self.cached_pdf = fitz_open(pdf_path)
                     self.cached_pdf_path = pdf_path
                 finally:
-                    socket.setdefaulttimeout(original_timeout)
+                    setdefaulttimeout(original_timeout)
             
             # Get the specified page
             page = self.cached_pdf[page_num]
@@ -279,7 +275,7 @@ class PDFManager:
             quality_multiplier = 2 if zoom > 1.0 else 1  # Higher quality when zoomed in
             
             # Create matrix with optimal settings for scanned documents and rotation
-            zoom_matrix = fitz.Matrix(zoom * quality_multiplier, zoom * quality_multiplier)
+            zoom_matrix = Matrix(zoom * quality_multiplier, zoom * quality_multiplier)
             if self.current_rotation:
                 zoom_matrix.prerotate(self.current_rotation)
             
@@ -292,12 +288,12 @@ class PDFManager:
             
             # Convert to PIL Image
             img_data = pix.tobytes("png")
-            image = Image.open(io.BytesIO(img_data))
+            image = pil_open(BytesIO(img_data))
             
             return image
             
         except Exception as e:
             self.clear_cache()  # Clear cache on error
-            if isinstance(e, socket.timeout):
+            if isinstance(e, SocketTimeout):
                 raise Exception("Network timeout while accessing PDF file")
             raise Exception(f"Error rendering PDF: {str(e)}")
