@@ -1,13 +1,13 @@
-from tkinter import END, SINGLE, Widget, Event, Listbox
-from tkinter.ttk import Frame, Entry, Scrollbar
+from tkinter import END, SINGLE, Widget, Event, Listbox, StringVar
+from tkinter.ttk import Frame, Entry, Scrollbar, Style
 from difflib import SequenceMatcher
 from typing import List, Optional, Any
 
 class FuzzySearchFrame(Frame):
-    """A frame that provides fuzzy search functionality with a text entry and listbox.
+    """A modernized frame that provides fuzzy search functionality with a text entry and listbox.
     
     This widget allows users to search through a list of values using fuzzy matching,
-    displaying the best matches in a scrollable listbox.
+    displaying the best matches in a scrollable listbox with improved styling and accessibility.
     """
     
     def __init__(
@@ -24,6 +24,9 @@ class FuzzySearchFrame(Frame):
         self.search_threshold = max(0, min(100, search_threshold))  # Clamp between 0 and 100
         self.identifier = identifier or 'unnamed'
         
+        # Setup styling
+        self._setup_styles()
+        
         # Remove debouncing since we want instantaneous results
         self._prev_value = ''
         self._ignore_next_keyrelease = False
@@ -35,30 +38,61 @@ class FuzzySearchFrame(Frame):
         
         self.after(100, self._ensure_focus)
         
+    def _setup_styles(self) -> None:
+        """Configure custom styles for the fuzzy search components."""
+        style = Style()
+        
+        # Entry style
+        style.configure(
+            "Search.TEntry",
+            padding=5,
+            relief="solid",
+            borderwidth=1,
+            font=('Segoe UI', 10)
+        )
+        
+        # Frame style
+        style.configure(
+            "Search.TFrame",
+            background="#ffffff",
+            relief="solid",
+            borderwidth=1
+        )
+        
     def _create_widgets(self) -> None:
-        """Create and configure all child widgets."""
-        # Entry widget
-        self.entry = Entry(self)
+        """Create and configure all child widgets with modern styling."""
+        # Entry widget with placeholder
+        self.entry_var = StringVar()
+        self.entry = Entry(
+            self,
+            style="Search.TEntry",
+            textvariable=self.entry_var
+        )
         self.entry.pack(fill='x', padx=2, pady=2)
         
-        # Bind focus-related events
-        self.entry.bind('<FocusIn>', self._on_focus_in)
-        self.entry.bind('<FocusOut>', self._on_focus_out)
+        # Set placeholder text
+        self._set_placeholder()
         
         # Listbox frame with scrollbar
-        listbox_frame = Frame(self)
+        listbox_frame = Frame(self, style="Search.TFrame")
         listbox_frame.pack(fill='both', expand=True, padx=2)
         
-        # Listbox
+        # Listbox with modern styling
         self.listbox = Listbox(
             listbox_frame,
             height=5,
             exportselection=False,
-            selectmode=SINGLE
+            selectmode=SINGLE,
+            font=('Segoe UI', 10),
+            relief="flat",
+            background="#ffffff",
+            selectbackground="#007bff",
+            selectforeground="#ffffff",
+            activestyle="none"
         )
         self.listbox.pack(side='left', fill='both', expand=True)
         
-        # Scrollbar
+        # Modern scrollbar
         scrollbar = Scrollbar(
             listbox_frame,
             orient='vertical',
@@ -68,6 +102,22 @@ class FuzzySearchFrame(Frame):
         self.listbox.configure(yscrollcommand=scrollbar.set)
         
         # Configure mousewheel scrolling
+        self._setup_mousewheel_scrolling(listbox_frame, scrollbar)
+        
+    def _set_placeholder(self) -> None:
+        """Set placeholder text for the entry widget."""
+        if not self.entry.get():
+            self.entry.configure(foreground='gray')
+            self.entry_var.set("Type to search...")
+            
+    def _clear_placeholder(self) -> None:
+        """Clear placeholder text when entry gets focus."""
+        if self.entry.get() == "Type to search...":
+            self.entry.configure(foreground='black')
+            self.entry_var.set("")
+            
+    def _setup_mousewheel_scrolling(self, frame: Frame, scrollbar: Scrollbar) -> None:
+        """Setup smooth mousewheel scrolling for the listbox."""
         def _on_mousewheel(event: Event) -> str:
             self.listbox.yview_scroll(int(-1 * (event.delta / 120)), "units")
             return "break"
@@ -85,30 +135,62 @@ class FuzzySearchFrame(Frame):
         scrollbar.bind('<Leave>', _unbind_mousewheel)
         
     def _bind_events(self) -> None:
-        """Bind widget events to their handlers."""
+        """Bind widget events to their handlers with improved accessibility."""
+        # Entry events
         self.entry.bind('<KeyRelease>', self._on_keyrelease)
-        self.listbox.bind('<<ListboxSelect>>', self._on_select)
-        self.listbox.bind('<Button-1>', lambda e: self.after(50, self._on_select, e))
-        self.listbox.bind('<Double-Button-1>', self._on_select)
+        self.entry.bind('<FocusIn>', self._on_focus_in)
+        self.entry.bind('<FocusOut>', self._on_focus_out)
         self.entry.bind('<Return>', lambda e: self._select_top_match())
         self.entry.bind('<Down>', lambda e: self._focus_listbox())
         self.entry.bind('<Tab>', self._handle_tab)
         
+        # Listbox events
+        self.listbox.bind('<<ListboxSelect>>', self._on_select)
+        self.listbox.bind('<Button-1>', lambda e: self.after(50, self._on_select, e))
+        self.listbox.bind('<Double-Button-1>', self._on_select)
+        self.listbox.bind('<Return>', lambda e: self._on_select(e))
+        self.listbox.bind('<Escape>', lambda e: self.entry.focus_set())
+        
+    def _on_focus_in(self, event: Optional[Event] = None) -> None:
+        """Handle focus-in event with improved visual feedback."""
+        self._clear_placeholder()
+        if self._focus_after_id:
+            self.after_cancel(self._focus_after_id)
+            self._focus_after_id = None
+        self.entry.configure(foreground='black')
+            
+    def _on_focus_out(self, event: Optional[Event] = None) -> None:
+        """Handle focus-out event with placeholder restoration."""
+        if not self.entry.get():
+            self._set_placeholder()
+        
     def set_values(self, values: Optional[List[str]]) -> None:
         """Update the list of searchable values."""
         self.all_values = [str(v) for v in (values or []) if v is not None]
+        current_value = self.entry.get()
+        if current_value == "Type to search...":
+            current_value = ""
         self.entry.delete(0, END)
+        if current_value:
+            self.entry.insert(0, current_value)
+        else:
+            self._set_placeholder()
         self._update_listbox()
         
     def get(self) -> str:
-        """Get the current entry text."""
-        return self.entry.get()
+        """Get the current entry text, excluding placeholder."""
+        value = self.entry.get()
+        return "" if value == "Type to search..." else value
         
     def set(self, value: str) -> None:
-        """Set the entry text."""
+        """Set the entry text with proper placeholder handling."""
         self.entry.delete(0, END)
-        self.entry.insert(0, str(value))
-        
+        if value:
+            self.entry.configure(foreground='black')
+            self.entry.insert(0, str(value))
+        else:
+            self._set_placeholder()
+
     def _on_keyrelease(self, event: Event) -> None:
         """Handle key release events in the entry widget."""
         if self._ignore_next_keyrelease:
@@ -121,6 +203,8 @@ class FuzzySearchFrame(Frame):
     def _update_listbox(self) -> None:
         """Update the listbox with intelligent fuzzy search results."""
         current_value = self.entry.get().strip()
+        if current_value == "Type to search...":
+            current_value = ""
         
         # Clear current listbox
         self.listbox.delete(0, END)
@@ -177,8 +261,8 @@ class FuzzySearchFrame(Frame):
             for value in self.all_values:
                 if current_value.lower() in value.lower():
                     self.listbox.insert(END, value)
-                    
-    def _on_select(self, event: Event) -> None:
+
+    def _on_select(self, event: Optional[Event] = None) -> None:
         """Handle selection events in the listbox."""
         if not self.listbox.size():  # If listbox is empty, do nothing
             return
@@ -249,18 +333,6 @@ class FuzzySearchFrame(Frame):
             # Schedule another check
             self._focus_after_id = self.after(100, self._ensure_focus)
             
-    def _on_focus_in(self, event: Optional[Event] = None) -> None:
-        """Handle focus-in event."""
-        if self._focus_after_id:
-            self.after_cancel(self._focus_after_id)
-            self._focus_after_id = None
-            
-    def _on_focus_out(self, event: Optional[Event] = None) -> None:
-        """Handle focus-out event."""
-        # If we lose focus, try to get it back after a short delay
-        # This helps with the initial focus issues
-        self._focus_after_id = self.after(100, self._ensure_focus)
-        
     def _handle_tab(self, event: Optional[Event] = None) -> Optional[str]:
         """Handle Tab key press in the entry widget."""
         if self.listbox.winfo_ismapped() and self.listbox.size() > 0:

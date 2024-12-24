@@ -1,7 +1,7 @@
 from __future__ import annotations
-from tkinter import Canvas, END, Event as TkEvent, Widget
-from tkinter.ttk import Frame, Scrollbar, Label, Button, Style, LabelFrame, Treeview
-from PIL.ImageTk import PhotoImage
+from tkinter import Canvas, END, Event as TkEvent, Widget, ttk, StringVar, NSEW, PhotoImage, Toplevel
+from tkinter.ttk import Frame, Scrollbar, Label, Button, Style, LabelFrame, Treeview, Notebook
+from PIL.ImageTk import PhotoImage as PILPhotoImage
 from os import path
 from typing import Optional, Any, Dict, List, Callable
 from threading import Thread, Lock, Event
@@ -187,39 +187,107 @@ class ProcessingQueue:
 
 # UI Components
 class PDFViewer(Frame):
+    """A modernized PDF viewer widget with zoom and scroll capabilities."""
+    
     def __init__(self, master: Widget, pdf_manager: Any):
         super().__init__(master)
         self.pdf_manager = pdf_manager
-        self.current_image: Optional[PhotoImage] = None
+        self.current_image: Optional[PILPhotoImage] = None
         self.current_pdf: Optional[str] = None
         self.zoom_level = 1.0
+        
+        # Configure grid weights
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        
         self.setup_ui()
 
     def setup_ui(self) -> None:
-        self.canvas_frame = Frame(self)
-        self.canvas_frame.pack(fill='both', expand=True)
+        """Setup the PDF viewer interface."""
+        # Create a container frame with fixed padding for scrollbars
+        self.container_frame = Frame(self)
+        self.container_frame.grid(row=0, column=0, sticky='nsew')
+        self.container_frame.grid_columnconfigure(0, weight=1)
+        self.container_frame.grid_rowconfigure(0, weight=1)
         
+        # Create canvas with modern styling
         self.canvas = Canvas(
-            self.canvas_frame,
-            bg='#f0f0f0'
+            self.container_frame,
+            bg='#f8f9fa',  # Light gray background
+            highlightthickness=0,  # Remove border
+            width=20,  # Minimum width to prevent collapse
+            height=20   # Minimum height to prevent collapse
+        )
+        self.canvas.grid(row=0, column=0, sticky='nsew')
+        
+        # Modern scrollbars - always create them to reserve space
+        self.h_scrollbar = Scrollbar(
+            self.container_frame,
+            orient='horizontal',
+            command=self.canvas.xview
+        )
+        self.h_scrollbar.grid(row=1, column=0, sticky='ew')
+        
+        self.v_scrollbar = Scrollbar(
+            self.container_frame,
+            orient='vertical',
+            command=self.canvas.yview
+        )
+        self.v_scrollbar.grid(row=0, column=1, sticky='ns')
+        
+        # Configure canvas scrolling
+        self.canvas.configure(
+            xscrollcommand=self._on_x_scroll,
+            yscrollcommand=self._on_y_scroll
         )
         
-        self.h_scrollbar = Scrollbar(self.canvas_frame, orient='horizontal',
-                                   command=self.canvas.xview)
-        self.v_scrollbar = Scrollbar(self.canvas_frame, orient='vertical',
-                                   command=self.canvas.yview)
+        # Initially hide scrollbars but keep their space reserved
+        self.h_scrollbar.grid_remove()
+        self.v_scrollbar.grid_remove()
         
-        self.canvas.configure(xscrollcommand=self.h_scrollbar.set,
-                            yscrollcommand=self.v_scrollbar.set)
-        
-        self.h_scrollbar.pack(side='bottom', fill='x')
-        self.v_scrollbar.pack(side='right', fill='y')
-        self.canvas.pack(side='left', fill='both', expand=True)
+        # Create a frame for the loading message that won't affect layout
+        self.loading_frame = Frame(self.container_frame)
+        self.loading_frame.place(relx=0.5, rely=0.5, anchor='center')
         
         self._bind_events()
 
+    def _on_x_scroll(self, *args) -> None:
+        """Handle horizontal scrolling and scrollbar visibility."""
+        self.h_scrollbar.set(*args)
+        self._update_scrollbar_visibility()
+
+    def _on_y_scroll(self, *args) -> None:
+        """Handle vertical scrolling and scrollbar visibility."""
+        self.v_scrollbar.set(*args)
+        self._update_scrollbar_visibility()
+
+    def _update_scrollbar_visibility(self) -> None:
+        """Update scrollbar visibility based on content size."""
+        if not self.current_image:
+            self.h_scrollbar.grid_remove()
+            self.v_scrollbar.grid_remove()
+            return
+
+        # Get the scroll region and canvas size
+        x1, y1, x2, y2 = self.canvas.bbox("all") if self.canvas.find_all() else (0, 0, 0, 0)
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+
+        # Show/hide horizontal scrollbar
+        if x2 - x1 > canvas_width:
+            self.h_scrollbar.grid()
+        else:
+            self.h_scrollbar.grid_remove()
+
+        # Show/hide vertical scrollbar
+        if y2 - y1 > canvas_height:
+            self.v_scrollbar.grid()
+        else:
+            self.v_scrollbar.grid_remove()
+
     def _bind_events(self) -> None:
-        def _on_mousewheel(event):
+        """Bind mouse and keyboard events."""
+        def _on_mousewheel(event: Event) -> None:
             if event.state & 4:  # Ctrl key
                 if event.delta > 0:
                     self.zoom_in()
@@ -228,10 +296,10 @@ class PDFViewer(Frame):
             else:
                 self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        def _bind_mousewheel(event):
+        def _bind_mousewheel(event: Event) -> None:
             self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
             
-        def _unbind_mousewheel(event):
+        def _unbind_mousewheel(event: Event) -> None:
             self.canvas.unbind_all("<MouseWheel>")
 
         # Bind mousewheel only when mouse is over the PDF viewer area
@@ -240,32 +308,30 @@ class PDFViewer(Frame):
         self.v_scrollbar.bind('<Enter>', _bind_mousewheel)
         self.v_scrollbar.bind('<Leave>', _unbind_mousewheel)
         
+        # Pan functionality
         self.canvas.bind("<Button-1>", self._start_drag)
         self.canvas.bind("<B1-Motion>", self._do_drag)
         self.canvas.bind("<ButtonRelease-1>", self._stop_drag)
+        
+        # Window resize handling
         self.canvas.bind("<Configure>", self._on_resize)
         self.canvas.bind("<Key>", self._on_key)
 
-    def _on_mousewheel(self, event: Event) -> None:
-        if event.state & 4:  # Ctrl key
-            if event.delta > 0:
-                self.zoom_in()
-            else:
-                self.zoom_out()
-        else:
-            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
     def _start_drag(self, event: Event) -> None:
+        """Start panning the view."""
         self.canvas.scan_mark(event.x, event.y)
         self.canvas.configure(cursor="fleur")
 
     def _do_drag(self, event: Event) -> None:
+        """Continue panning the view."""
         self.canvas.scan_dragto(event.x, event.y, gain=1)
 
     def _stop_drag(self, event: Event) -> None:
+        """Stop panning the view."""
         self.canvas.configure(cursor="")
 
     def _on_key(self, event: Event) -> None:
+        """Handle keyboard navigation."""
         key = event.keysym
         shift_pressed = event.state & 0x1
 
@@ -287,65 +353,87 @@ class PDFViewer(Frame):
             self.canvas.yview_moveto(1)
 
     def _on_resize(self, event: Event) -> None:
+        """Handle window resize events."""
         if event.widget == self.canvas:
             self._center_image()
+            self._update_scrollbar_visibility()
 
     def _center_image(self) -> None:
+        """Center the PDF image in the canvas."""
         if not self.current_image:
             return
 
+        # Get dimensions
         canvas_width = self.canvas.winfo_width()
         canvas_height = self.canvas.winfo_height()
+        image_width = self.current_image.width()
+        image_height = self.current_image.height()
         
-        x = max(0, (canvas_width - self.current_image.width()) // 2)
-        y = max(0, (canvas_height - self.current_image.height()) // 2)
+        # Calculate centering offsets
+        x = max(0, (canvas_width - image_width) // 2)
+        y = max(0, (canvas_height - image_height) // 2)
         
-        padding_width = max(canvas_width, self.current_image.width())
-        padding_height = max(canvas_height, self.current_image.height())
+        # Set scroll region to image bounds plus padding
+        scroll_width = max(canvas_width, image_width + x * 2)
+        scroll_height = max(canvas_height, image_height + y * 2)
         
-        self.canvas.configure(scrollregion=(
-            -x,
-            -y,
-            padding_width + x,
-            padding_height + y
-        ))
+        self.canvas.configure(scrollregion=(0, 0, scroll_width, scroll_height))
         
+        # Clear and redraw image
         self.canvas.delete("all")
-        self.canvas.create_image(x, y, anchor='nw', image=self.current_image)
+        image_x = (scroll_width - image_width) // 2
+        image_y = (scroll_height - image_height) // 2
+        self.canvas.create_image(image_x, image_y, anchor='nw', image=self.current_image)
+        
+        # Update scrollbar visibility
+        self._update_scrollbar_visibility()
 
-    def display_pdf(self, pdf_path: str, zoom: float = 1.0) -> None:
+    def display_pdf(self, pdf_path: str, zoom: float = 1.0, show_loading: bool = True) -> None:
+        """Display a PDF file with the specified zoom level."""
         try:
             self.current_pdf = pdf_path
             self.zoom_level = zoom
             
-            for widget in self.canvas_frame.winfo_children():
-                if isinstance(widget, Label):
-                    widget.destroy()
+            # Show loading message using place geometry manager
+            loading_label = None
+            if show_loading:
+                loading_label = Label(
+                    self.loading_frame,
+                    text="Loading PDF...",
+                    font=('Segoe UI', 10)
+                )
+                loading_label.pack(pady=20)
+                self.loading_frame.lift()  # Bring loading message to front
+                self.update()
             
-            loading_label = Label(self.canvas_frame, text="Loading PDF...",
-                                    font=('Segoe UI', 10))
-            loading_label.pack(pady=20)
-            self.update()
-            
+            # Render PDF
             image = self.pdf_manager.render_pdf_page(pdf_path, zoom=zoom)
-            loading_label.destroy()
             
-            self.current_image = PhotoImage(image)
-            self.after(100, self._center_image)
+            if loading_label:
+                loading_label.destroy()
+                self.loading_frame.place_forget()  # Hide the loading frame
+            
+            self.current_image = PILPhotoImage(image)
+            self._center_image()
             self.canvas.focus_set()
             
         except Exception as e:
+            if loading_label:
+                loading_label.destroy()
+                self.loading_frame.place_forget()  # Hide the loading frame in case of error
             ErrorDialog(self, "Error", f"Error displaying PDF: {str(e)}")
 
     def zoom_in(self, step: float = 0.2) -> None:
+        """Zoom in the PDF view."""
         if self.current_pdf:
             self.zoom_level = min(3.0, self.zoom_level + step)
-            self.display_pdf(self.current_pdf, self.zoom_level)
+            self.display_pdf(self.current_pdf, self.zoom_level, show_loading=False)
 
     def zoom_out(self, step: float = 0.2) -> None:
+        """Zoom out the PDF view."""
         if self.current_pdf:
             self.zoom_level = max(0.2, self.zoom_level - step)
-            self.display_pdf(self.current_pdf, self.zoom_level)
+            self.display_pdf(self.current_pdf, self.zoom_level, show_loading=False)
 
 class QueueDisplay(Frame):
     def __init__(self, master: Widget):
@@ -353,34 +441,140 @@ class QueueDisplay(Frame):
         self.setup_ui()
 
     def setup_ui(self) -> None:
-        columns = ('filename', 'status')
-        self.table = Treeview(self, columns=columns, show='headings', height=5)
+        # Configure grid weights for responsive layout
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0)  # For buttons
+
+        # Create a frame for the table and scrollbar
+        table_frame = Frame(self)
+        table_frame.grid(row=0, column=0, sticky='nsew', padx=5, pady=5)
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_rowconfigure(0, weight=1)
+
+        # Setup table with more columns
+        columns = ('filename', 'values', 'status', 'time')
+        self.table = Treeview(table_frame, columns=columns, show='headings', height=5)
         
+        # Configure headings with sort functionality
         self.table.heading('filename', text='File')
+        self.table.heading('values', text='Selected Values')
         self.table.heading('status', text='Status')
+        self.table.heading('time', text='Time')
         
-        self.table.column('filename', width=150)
-        self.table.column('status', width=80)
+        # Configure column widths and weights
+        self.table.column('filename', width=120, minwidth=80)
+        self.table.column('values', width=150, minwidth=120)
+        self.table.column('status', width=70, minwidth=70)
+        self.table.column('time', width=60, minwidth=60)
 
-        scrollbar = Scrollbar(self, orient="vertical", command=self.table.yview)
-        self.table.configure(yscrollcommand=scrollbar.set)
+        # Add vertical scrollbar
+        v_scrollbar = Scrollbar(table_frame, orient="vertical", command=self.table.yview)
+        self.table.configure(yscrollcommand=v_scrollbar.set)
 
-        self.table.pack(side='left', fill='both', expand=True)
-        scrollbar.pack(side='right', fill='y')
+        # Add horizontal scrollbar
+        h_scrollbar = Scrollbar(table_frame, orient="horizontal", command=self.table.xview)
+        self.table.configure(xscrollcommand=h_scrollbar.set)
 
+        # Grid table and scrollbars
+        self.table.grid(row=0, column=0, sticky='nsew')
+        v_scrollbar.grid(row=0, column=1, sticky='ns')
+        h_scrollbar.grid(row=1, column=0, sticky='ew')
+
+        # Configure status colors and tooltips
         self.table.tag_configure('pending', foreground='black')
         self.table.tag_configure('processing', foreground='blue')
         self.table.tag_configure('completed', foreground='green')
         self.table.tag_configure('failed', foreground='red')
 
+        # Bind tooltip events
+        self.table.bind('<Motion>', self._show_tooltip)
+        self._tooltip_label = None
+
+        # Create button frame at the bottom
         btn_frame = Frame(self)
-        btn_frame.pack(fill='x', pady=(5, 0))
+        btn_frame.grid(row=1, column=0, sticky='ew', padx=5, pady=(0, 5))
+        btn_frame.grid_columnconfigure(0, weight=1)
+        btn_frame.grid_columnconfigure(1, weight=1)
+
+        # Style for modern looking buttons
+        style = Style()
+        style.configure("Action.TButton", padding=5)
         
-        self.clear_btn = Button(btn_frame, text="Clear Completed")
-        self.clear_btn.pack(side='left', padx=2)
+        # Add buttons with equal width and spacing
+        self.clear_btn = Button(
+            btn_frame,
+            text="Clear Completed",
+            style="Action.TButton",
+            width=20  # Reduced from 15
+        )
+        self.clear_btn.grid(row=0, column=0, padx=(0, 2), sticky='e')
         
-        self.retry_btn = Button(btn_frame, text="Retry Failed")
-        self.retry_btn.pack(side='right', padx=2)
+        self.retry_btn = Button(
+            btn_frame,
+            text="Retry Failed",
+            style="Action.TButton",
+            width=20  # Reduced from 15
+        )
+        self.retry_btn.grid(row=0, column=1, padx=(2, 0), sticky='w')
+
+    def _show_tooltip(self, event) -> None:
+        """Show tooltip with full path when hovering over truncated filename."""
+        # Get the item under cursor
+        item = self.table.identify_row(event.y)
+        if not item:
+            self._hide_tooltip()
+            return
+
+        # Get the column under cursor
+        column = self.table.identify_column(event.x)
+        if column != '#1':  # Only show tooltip for filename column
+            self._hide_tooltip()
+            return
+
+        # Get full path from the item
+        values = self.table.item(item)['values']
+        if not values:
+            self._hide_tooltip()
+            return
+
+        full_path = values[0]
+        displayed_text = self.table.item(item, 'text')
+
+        # Only show tooltip if text is truncated
+        cell_box = self.table.bbox(item, column)
+        if not cell_box:
+            self._hide_tooltip()
+            return
+
+        if self._tooltip_label is None:
+            self._tooltip_label = Label(
+                self,
+                text=full_path,
+                background='#ffffe0',
+                relief='solid',
+                borderwidth=1
+            )
+
+        # Position tooltip below the cell
+        x = self.table.winfo_rootx() + cell_box[0]
+        y = self.table.winfo_rooty() + cell_box[1] + cell_box[3]
+        self._tooltip_label.place(x=x, y=y)
+
+    def _hide_tooltip(self) -> None:
+        """Hide the tooltip."""
+        if self._tooltip_label:
+            self._tooltip_label.place_forget()
+
+    def _get_truncated_path(self, path_str: str, max_length: int = 30) -> str:
+        """Truncate path while keeping filename."""
+        filename = path.basename(path_str)
+        if len(filename) <= max_length:
+            return filename
+        
+        # If filename is too long, truncate the middle
+        half = (max_length - 3) // 2
+        return f"{filename[:half]}...{filename[-half:]}"
 
     def update_display(self, tasks: Dict[str, PDFTask]) -> None:
         selection = self.table.selection()
@@ -388,19 +582,36 @@ class QueueDisplay(Frame):
         
         current_items = {}
         for item in self.table.get_children():
-            path = self.table.item(item)['values'][0]
-            current_items[path] = item
+            path_value = self.table.item(item)['values'][0]
+            current_items[path_value] = item
         
         for task_path, task in tasks.items():
+            # Format the values string
+            values_str = f"{task.value1} | {task.value2} | {task.value3}"
+            
+            # Get current time for processing tasks
+            time_str = datetime.now().strftime("%H:%M:%S") if task.status == 'processing' else ""
+            
+            # Create display values
+            display_values = (
+                task_path,  # Store full path for tooltip
+                values_str,
+                task.status.capitalize(),
+                time_str
+            )
+            
             if task_path in current_items:
-                self.table.set(current_items[task_path],
-                             'status', task.status.capitalize())
+                # Update all columns with new values
+                for idx, col in enumerate(['filename', 'values', 'status', 'time']):
+                    self.table.set(current_items[task_path], column=col, value=display_values[idx])
                 self.table.item(current_items[task_path],
+                              text=self._get_truncated_path(task_path),
                               tags=(task.status,))
                 current_items.pop(task_path)
             else:
                 item = self.table.insert('', 'end',
-                                       values=(task_path, task.status.capitalize()),
+                                       text=self._get_truncated_path(task_path),
+                                       values=display_values,
                                        tags=(task.status,))
                 if task_path in selected_paths:
                     self.table.selection_add(item)
@@ -409,7 +620,7 @@ class QueueDisplay(Frame):
             self.table.delete(item_id)
 
 class ProcessingTab(Frame):
-    """A tab for processing PDF files with Excel data integration."""
+    """A modernized tab for processing PDF files with Excel data integration."""
     
     def __init__(self, master: Widget, config_manager: Any,
                  excel_manager: Any, pdf_manager: Any) -> None:
@@ -423,6 +634,10 @@ class ProcessingTab(Frame):
         self.current_pdf: Optional[str] = None
         self.all_values2: List[str] = []
         
+        # Configure styles
+        self._setup_styles()
+        
+        # Setup main layout
         self.setup_ui()
         self.update_queue_display()
         self.after(100, self._periodic_update)
@@ -431,160 +646,265 @@ class ProcessingTab(Frame):
         if hasattr(config_manager, 'add_change_callback'):
             config_manager.add_change_callback(self.handle_config_change)
 
-    def handle_config_change(self) -> None:
-        """Handle configuration changes by reloading the current PDF if one is loaded."""
-        if self.current_pdf:
-            self.pdf_viewer.display_pdf(self.current_pdf)
-            self.update_queue_display()
+    def _setup_styles(self) -> None:
+        """Configure custom styles for the interface."""
+        style = Style()
+        
+        # Configure main theme settings
+        style.configure(".", font=('Segoe UI', 10))
+        style.configure("Title.TLabel", font=('Segoe UI', 12, 'bold'))
+        style.configure("Header.TLabel", font=('Segoe UI', 11, 'bold'))
+        
+        # Configure button styles
+        style.configure("Primary.TButton",
+                       padding=10,
+                       font=('Segoe UI', 10, 'bold'),
+                       background="#007bff")
+        style.configure("Secondary.TButton",
+                       padding=10,
+                                 font=('Segoe UI', 10))
+        style.configure("Success.TButton",
+                       padding=10,
+                       font=('Segoe UI', 10, 'bold'),
+                       background="#28a745")
+        
+        # Configure frame styles
+        style.configure("Card.TFrame",
+                       background="#ffffff",
+                       relief="solid",
+                       borderwidth=1)
+        
+        # Configure Treeview
+        style.configure("Treeview",
+                       font=('Segoe UI', 10),
+                       rowheight=25)
+        style.configure("Treeview.Heading",
+                       font=('Segoe UI', 10, 'bold'))
 
     def setup_ui(self) -> None:
-        style = Style()
-        style.configure("Action.TButton", padding=5)
-        style.configure("Zoom.TButton", padding=2)
+        """Setup the main user interface with a modern, clean layout."""
+        self.configure(padding=20)
         
-        container = Frame(self)
-        container.pack(fill='both', expand=True, padx=20, pady=20)
+        # Configure grid weights for the main frame
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
         
-        # Header
-        header_frame = Frame(container)
-        header_frame.pack(fill='x', pady=(0, 10))
+        # Create main container with three columns
+        main_container = Frame(self)
+        main_container.grid(row=0, column=0, sticky='nsew')
         
-        self.file_info = Label(header_frame, text="No file loaded",
-                                 font=('Segoe UI', 10))
-        self.file_info.pack(side='left')
+        # Configure column weights for the container
+        main_container.grid_columnconfigure(0, weight=1)  # Left panel (20%)
+        main_container.grid_columnconfigure(1, weight=8)  # Center panel (70%)
+        main_container.grid_columnconfigure(2, weight=1)  # Right panel (10%)
+        main_container.grid_rowconfigure(0, weight=1)
         
-        # Content area
-        content_frame = Frame(container)
-        content_frame.pack(fill='both', expand=True)
+        # Left Panel (10% width)
+        left_panel = self._create_left_panel(main_container)
+        left_panel.grid(row=0, column=0, sticky='nsew', padx=(0, 10))
         
-        # PDF Viewer
-        viewer_frame = LabelFrame(content_frame, text="PDF Viewer", padding=10)
-        viewer_frame.pack(side='left', fill='both', expand=True, padx=(0, 10))
+        # Center Panel (80% width)
+        center_panel = self._create_center_panel(main_container)
+        center_panel.grid(row=0, column=1, sticky='nsew', padx=10)
         
-        self.pdf_viewer = PDFViewer(viewer_frame, self.pdf_manager)
-        self.pdf_viewer.pack(fill='both', expand=True)
-        
-        # Controls - Add scrollable frame
-        controls_outer_frame = Frame(content_frame)
-        controls_outer_frame.pack(side='right', fill='y')
-        
-        # Create canvas and scrollbar for controls
-        controls_canvas = Canvas(controls_outer_frame, width=250)
-        controls_scrollbar = Scrollbar(controls_outer_frame, orient="vertical", command=controls_canvas.yview)
-        
-        # Controls frame
-        controls_frame = LabelFrame(controls_canvas, text="Controls", padding=10)
-        controls_frame.configure(width=250)
-        
-        # Configure canvas
-        controls_canvas.configure(yscrollcommand=controls_scrollbar.set)
-        controls_canvas.pack(side='left', fill='both', expand=True)
-        controls_scrollbar.pack(side='right', fill='y')
-        
-        # Create window in canvas for controls frame
-        canvas_frame = controls_canvas.create_window((0, 0), window=controls_frame, anchor='nw', width=230)
-        
-        self._setup_zoom_controls(controls_frame)
-        self._setup_queue_display(controls_frame)
-        self._setup_filters(controls_frame)
-        self._setup_action_buttons(controls_frame)
-        
-        # Configure scrolling
-        def _configure_canvas(event):
-            controls_canvas.configure(scrollregion=controls_canvas.bbox("all"))
-            controls_canvas.itemconfig(canvas_frame, width=controls_canvas.winfo_width())
-        
-        controls_frame.bind('<Configure>', _configure_canvas)
-        controls_canvas.bind('<Configure>', lambda e: controls_canvas.itemconfig(canvas_frame, width=controls_canvas.winfo_width()))
-        
-        # Enable mousewheel scrolling only when mouse is over controls
-        def _on_mousewheel(event):
-            controls_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        
-        def _bind_mousewheel(event):
-            controls_canvas.bind_all("<MouseWheel>", _on_mousewheel)
-            
-        def _unbind_mousewheel(event):
-            controls_canvas.unbind_all("<MouseWheel>")
-        
-        # Bind mousewheel only when mouse enters/leaves the controls area
-        controls_canvas.bind('<Enter>', _bind_mousewheel)
-        controls_canvas.bind('<Leave>', _unbind_mousewheel)
-        controls_scrollbar.bind('<Enter>', _bind_mousewheel)
-        controls_scrollbar.bind('<Leave>', _unbind_mousewheel)
-        
-        self._bind_keyboard_shortcuts()
+        # Right Panel (10% width)
+        right_panel = self._create_right_panel(main_container)
+        right_panel.grid(row=0, column=2, sticky='nsew', padx=(10, 0))
 
-    def _setup_zoom_controls(self, parent: Frame) -> None:
-        zoom_frame = Frame(parent)
-        zoom_frame.pack(fill='x', pady=(0, 15))
+    def _create_left_panel(self, parent: Widget) -> Frame:
+        """Create the left panel containing file information and queue."""
+        panel = Frame(parent)
         
-        Label(zoom_frame, text="Zoom:").pack(side='left')
-        Button(zoom_frame, text="−", width=3, style="Zoom.TButton",
-                  command=self.pdf_viewer.zoom_out).pack(side='left', padx=2)
-        self.zoom_label = Label(zoom_frame, text="100%", width=6)
-        self.zoom_label.pack(side='left', padx=5)
-        Button(zoom_frame, text="+", width=3, style="Zoom.TButton",
-                  command=self.pdf_viewer.zoom_in).pack(side='left', padx=2)
+        # File Information Section
+        info_frame = LabelFrame(panel, text="File Information", padding=10)
+        info_frame.pack(fill='x', pady=(0, 10))
         
-        rotation_frame = Frame(parent)
-        rotation_frame.pack(fill='x', pady=(0, 15))
+        # Create a fixed-width container for the file info
+        file_info_container = Frame(info_frame)  # Removed fixed width from container
+        file_info_container.pack(fill='x', pady=5)
         
-        Label(rotation_frame, text="Rotate:").pack(side='left')
-        Button(rotation_frame, text="↶", width=3, style="Zoom.TButton",
-                  command=self.rotate_counterclockwise).pack(side='left', padx=2)
-        self.rotation_label = Label(rotation_frame, text="0°", width=6)
-        self.rotation_label.pack(side='left', padx=5)
-        Button(rotation_frame, text="↷", width=3, style="Zoom.TButton",
-                  command=self.rotate_clockwise).pack(side='left', padx=2)
+        self.file_info = Label(file_info_container, text="No file loaded",
+                             style="Header.TLabel", width=25)  # Set fixed width on label instead
+        self.file_info.pack(fill='x', pady=5)
+        
+        # Create tooltip for full filename
+        self.file_info_tooltip = None
+        def show_tooltip(event):
+            if self.file_info_tooltip or self.file_info['text'] == "No file loaded":
+                return
+            text = self.file_info['text']
+            if len(text) > 50:  # Only show tooltip for long filenames
+                x, y, _, _ = self.file_info.bbox("insert")
+                x += self.file_info.winfo_rootx() + 25
+                y += self.file_info.winfo_rooty() + 25
+                self.file_info_tooltip = Toplevel(self.file_info)
+                self.file_info_tooltip.wm_overrideredirect(True)
+                self.file_info_tooltip.wm_geometry(f"+{x}+{y}")
+                tooltip_label = Label(self.file_info_tooltip, text=text, 
+                                   justify='left', background="#ffffe0", 
+                                   relief='solid', borderwidth=1)
+                tooltip_label.pack()
 
-    def _setup_queue_display(self, parent: Frame) -> None:
-        queue_frame = LabelFrame(parent, text="Processing Queue", padding=10)
-        queue_frame.pack(fill='x', pady=(0, 15))
+        def hide_tooltip(event):
+            if self.file_info_tooltip:
+                self.file_info_tooltip.destroy()
+                self.file_info_tooltip = None
+
+        self.file_info.bind('<Enter>', show_tooltip)
+        self.file_info.bind('<Leave>', hide_tooltip)
+        
+        self.status_var = StringVar(value="Status: Ready")
+        status_label = Label(info_frame, textvariable=self.status_var)
+        status_label.pack(fill='x')
+        
+        # Processing Queue Section
+        queue_frame = LabelFrame(panel, text="Processing Queue", padding=10)
+        queue_frame.pack(fill='both', expand=True)
         
         self.queue_display = QueueDisplay(queue_frame)
         self.queue_display.pack(fill='both', expand=True)
         
-        self.queue_display.clear_btn.configure(command=self._clear_completed)
-        self.queue_display.retry_btn.configure(command=self._retry_failed)
-        self.queue_display.table.bind('<Double-1>', self._show_error_details)
+        return panel
 
-    def _setup_filters(self, parent: Frame) -> None:
-        filters_frame = LabelFrame(parent, text="Filters", padding=10)
-        filters_frame.pack(fill='x', pady=(0, 15))
+    def _create_center_panel(self, parent: Widget) -> Frame:
+        """Create the center panel containing the PDF viewer."""
+        panel = Frame(parent)
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(0, weight=1)
         
-        self.filter1_label = Label(filters_frame, text="",
-                                     font=('Segoe UI', 9, 'bold'))
+        # PDF Viewer Section
+        viewer_frame = LabelFrame(panel, text="PDF Viewer", padding=10)
+        viewer_frame.grid(row=0, column=0, sticky='nsew')
+        viewer_frame.grid_columnconfigure(0, weight=1)
+        viewer_frame.grid_rowconfigure(0, weight=1)
+        
+        self.pdf_viewer = PDFViewer(viewer_frame, self.pdf_manager)
+        self.pdf_viewer.grid(row=0, column=0, sticky='nsew')
+        
+        # Viewer Controls
+        controls_frame = Frame(viewer_frame)
+        controls_frame.grid(row=1, column=0, sticky='ew', pady=(10, 0))
+        
+        # Zoom Controls
+        zoom_frame = Frame(controls_frame)
+        zoom_frame.pack(side='left')
+        
+        Button(zoom_frame, text="−", width=3,
+                  command=self.pdf_viewer.zoom_out).pack(side='left', padx=2)
+        self.zoom_label = Label(zoom_frame, text="100%", width=6)
+        self.zoom_label.pack(side='left', padx=5)
+        Button(zoom_frame, text="+", width=3,
+                  command=self.pdf_viewer.zoom_in).pack(side='left', padx=2)
+        
+        # Rotation Controls
+        rotation_frame = Frame(controls_frame)
+        rotation_frame.pack(side='right')
+        
+        Button(rotation_frame, text="↶", width=3,
+                  command=self.rotate_counterclockwise).pack(side='left', padx=2)
+        self.rotation_label = Label(rotation_frame, text="0°", width=6)
+        self.rotation_label.pack(side='left', padx=5)
+        Button(rotation_frame, text="↷", width=3,
+                  command=self.rotate_clockwise).pack(side='left', padx=2)
+
+        return panel
+
+    def _create_right_panel(self, parent: Widget) -> Frame:
+        """Create the right panel containing filters and actions."""
+        panel = Frame(parent)
+        
+        # Filters Frame (replacing notebook)
+        filters_frame = LabelFrame(panel, text="Filters", padding=10)
+        filters_frame.pack(fill='both', expand=True, pady=(0, 10))
+        
+        self._setup_filters(filters_frame)
+        
+        # Action Buttons
+        actions_frame = Frame(panel)
+        actions_frame.pack(fill='x', pady=(10, 0))
+        
+        self.confirm_button = Button(
+            actions_frame,
+            text="Process File (Enter)",
+            command=self.process_current_file,
+            style="Success.TButton"
+        )
+        self.confirm_button.pack(fill='x', pady=(0, 5))
+        
+        self.skip_button = Button(
+            actions_frame,
+            text="Next File (Ctrl+N)",
+            command=self.load_next_pdf,
+            style="Primary.TButton"
+        )
+        self.skip_button.pack(fill='x')
+        
+        return panel
+
+    def _setup_filters(self, parent: Widget) -> None:
+        """Setup the filter controls with improved styling."""
+        self.filter1_label = Label(parent, text="",
+                                 style="Header.TLabel")
         self.filter1_label.pack(pady=(0, 5))
-        self.filter1_frame = FuzzySearchFrame(filters_frame, width=30,
+        self.filter1_frame = FuzzySearchFrame(parent, width=30,
                                             identifier='processing_filter1')
-        self.filter1_frame.pack(fill='x', pady=(0, 10))
+        self.filter1_frame.pack(fill='x', pady=(0, 15))
         
-        self.filter2_label = Label(filters_frame, text="",
-                                     font=('Segoe UI', 9, 'bold'))
+        self.filter2_label = Label(parent, text="",
+                                 style="Header.TLabel")
         self.filter2_label.pack(pady=(0, 5))
-        self.filter2_frame = FuzzySearchFrame(filters_frame, width=30,
+        self.filter2_frame = FuzzySearchFrame(parent, width=30,
                                             identifier='processing_filter2')
-        self.filter2_frame.pack(fill='x', pady=(0, 10))
+        self.filter2_frame.pack(fill='x', pady=(0, 15))
 
-        self.filter3_label = Label(filters_frame, text="",
-                                     font=('Segoe UI', 9, 'bold'))
+        self.filter3_label = Label(parent, text="",
+                                 style="Header.TLabel")
         self.filter3_label.pack(pady=(0, 5))
-        self.filter3_frame = FuzzySearchFrame(filters_frame, width=30,
+        self.filter3_frame = FuzzySearchFrame(parent, width=30,
                                             identifier='processing_filter3')
         self.filter3_frame.pack(fill='x')
         
+        # Bind events
         self.filter1_frame.bind('<<ValueSelected>>', lambda e: self.on_filter1_select())
         self.filter2_frame.bind('<<ValueSelected>>', lambda e: self.on_filter2_select())
         self.filter3_frame.bind('<<ValueSelected>>', lambda e: self.update_confirm_button())
 
-        # Bind tab navigation
+        # Bind keyboard navigation
+        self._bind_keyboard_shortcuts()
+
+    def _bind_keyboard_shortcuts(self) -> None:
+        """Bind keyboard shortcuts for improved navigation and accessibility."""
+        # Tab navigation between filters
         self.filter1_frame.entry.bind('<Tab>', self._handle_filter1_tab)
         self.filter2_frame.entry.bind('<Tab>', self._handle_filter2_tab)
         self.filter3_frame.entry.bind('<Tab>', self._handle_filter3_tab)
         self.filter1_frame.listbox.bind('<Tab>', self._handle_filter1_tab)
         self.filter2_frame.listbox.bind('<Tab>', self._handle_filter2_tab)
         self.filter3_frame.listbox.bind('<Tab>', self._handle_filter3_tab)
+        
+        # Global shortcuts
+        shortcuts = {
+            '<Return>': self._handle_return_key,
+            '<Control-n>': lambda e: self.load_next_pdf(),
+            '<Control-N>': lambda e: self.load_next_pdf(),
+            '<Control-plus>': lambda e: self.pdf_viewer.zoom_in(),
+            '<Control-minus>': lambda e: self.pdf_viewer.zoom_out(),
+            '<Control-r>': lambda e: self.rotate_clockwise(),
+            '<Control-R>': lambda e: self.rotate_counterclockwise()
+        }
+        
+        # Bind shortcuts recursively to all widgets
+        def _bind_recursive(widget: Widget) -> None:
+            for key, callback in shortcuts.items():
+                widget.bind(key, callback)
+            for child in widget.winfo_children():
+                _bind_recursive(child)
+        
+        _bind_recursive(self)
+        
+        # Also bind to the main frame
+        for key, callback in shortcuts.items():
+            self.bind_all(key, callback)
 
     def _handle_filter1_tab(self, event: Event) -> str:
         """Handle tab key in filter1 to move focus to filter2."""
@@ -598,18 +918,18 @@ class ProcessingTab(Frame):
         return "break"
 
     def _handle_filter2_tab(self, event: Event) -> str:
-        """Handle tab key in filter2 to move focus to next widget."""
+        """Handle tab key in filter2 to move focus to filter3."""
         if self.filter2_frame.listbox.winfo_ismapped():
             # If listbox is visible, select first item
             if self.filter2_frame.listbox.size() > 0:
                 self.filter2_frame.listbox.selection_clear(0, END)
                 self.filter2_frame.listbox.selection_set(0)
                 self.filter2_frame._on_select(None)
-        self.confirm_button.focus_set()
+        self.filter3_frame.entry.focus_set()
         return "break"
 
     def _handle_filter3_tab(self, event: Event) -> str:
-        """Handle tab key in filter3 to move focus to next widget."""
+        """Handle tab key in filter3 to move focus to confirm button."""
         if self.filter3_frame.listbox.winfo_ismapped():
             # If listbox is visible, select first item
             if self.filter3_frame.listbox.size() > 0:
@@ -619,54 +939,17 @@ class ProcessingTab(Frame):
         self.confirm_button.focus_set()
         return "break"
 
-    def _setup_action_buttons(self, parent: Frame) -> None:
-        actions_frame = Frame(parent)
-        actions_frame.pack(fill='x', pady=(0, 10))
-        
-        self.confirm_button = Button(
-            actions_frame,
-            text="Process File (Enter)",
-            command=self.process_current_file,
-            style="Action.TButton"
-        )
-        self.confirm_button.pack(fill='x', pady=(0, 5))
-        
-        self.skip_button = Button(
-            actions_frame,
-            text="Next File (Ctrl+N)",
-            command=self.load_next_pdf,
-            style="Action.TButton"
-        )
-        self.skip_button.pack(fill='x', pady=(0, 10))
-
-    def _bind_keyboard_shortcuts(self) -> None:
-        """Bind keyboard shortcuts specific to the processing tab."""
-        shortcuts = {
-            '<Return>': self.handle_return_key,
-            '<Control-n>': lambda e: self.load_next_pdf(),
-            '<Control-N>': lambda e: self.load_next_pdf(),
-            '<Control-plus>': lambda e: self.pdf_viewer.zoom_in(),
-            '<Control-minus>': lambda e: self.pdf_viewer.zoom_out(),
-            '<Control-r>': lambda e: self.rotate_clockwise(),
-            '<Control-Shift-R>': lambda e: self.rotate_counterclockwise()
-        }
-        
-        def _bind_recursive(widget):
-            for key, callback in shortcuts.items():
-                widget.bind(key, callback)
-            for child in widget.winfo_children():
-                _bind_recursive(child)
-        
-        _bind_recursive(self)
-        
-        # Also bind to the main frame for good measure
-        for key, callback in shortcuts.items():
-            self.bind_all(key, callback)
-
-    def handle_return_key(self, event: Event) -> str:
+    def _handle_return_key(self, event: Event) -> str:
+        """Handle Return key press to process the current file."""
         if str(self.confirm_button['state']) != 'disabled':
             self.process_current_file()
         return "break"
+
+    def handle_config_change(self) -> None:
+        """Handle configuration changes by reloading the current PDF if one is loaded."""
+        if self.current_pdf:
+            self.pdf_viewer.display_pdf(self.current_pdf)
+            self.update_queue_display()
 
     def load_excel_data(self) -> None:
         try:
@@ -735,25 +1018,32 @@ class ProcessingTab(Frame):
             ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
 
     def update_confirm_button(self) -> None:
+        """Update the confirm button state based on filter selections."""
         if self.filter1_frame.get() and self.filter2_frame.get() and self.filter3_frame.get():
             self.confirm_button.state(['!disabled'])
+            self.status_var.set("Status: Ready to process")
         else:
             self.confirm_button.state(['disabled'])
+            self.status_var.set("Status: Select all filters")
 
     def rotate_clockwise(self) -> None:
+        """Rotate the PDF view clockwise."""
         self.pdf_manager.rotate_page(clockwise=True)
         self.rotation_label.config(text=f"{self.pdf_manager.get_rotation()}°")
-        self.pdf_viewer.display_pdf(self.current_pdf, self.pdf_viewer.zoom_level)
+        self.pdf_viewer.display_pdf(self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False)
 
     def rotate_counterclockwise(self) -> None:
+        """Rotate the PDF view counterclockwise."""
         self.pdf_manager.rotate_page(clockwise=False)
         self.rotation_label.config(text=f"{self.pdf_manager.get_rotation()}°")
-        self.pdf_viewer.display_pdf(self.current_pdf, self.pdf_viewer.zoom_level)
+        self.pdf_viewer.display_pdf(self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False)
 
     def load_next_pdf(self) -> None:
+        """Load the next PDF file from the source folder."""
         try:
             config = self.config_manager.get_config()
             if not config['source_folder']:
+                self.status_var.set("Status: Source folder not configured")
                 return
                 
             next_pdf = self.pdf_manager.get_next_pdf(config['source_folder'])
@@ -762,15 +1052,20 @@ class ProcessingTab(Frame):
                 self.file_info['text'] = path.basename(next_pdf)
                 self.pdf_viewer.display_pdf(next_pdf, 1.0)
                 self.rotation_label.config(text="0°")
+                self.zoom_label.config(text="100%")
                 self.filter1_frame.focus_set()
+                self.status_var.set("Status: New file loaded")
             else:
                 self.file_info['text'] = "No PDF files found"
+                self.status_var.set("Status: No files to process")
                 
         except Exception as e:
             ErrorDialog(self, "Error", f"Error loading next PDF: {str(e)}")
 
     def process_current_file(self) -> None:
+        """Process the current PDF file with selected filters."""
         if not self.current_pdf or not path.exists(self.current_pdf):
+            self.status_var.set("Status: No file loaded")
             ErrorDialog(self, "Error", "No PDF file loaded")
             return
             
@@ -780,8 +1075,10 @@ class ProcessingTab(Frame):
             value3 = self.filter3_frame.get()
             
             if not value1 or not value2 or not value3:
+                self.status_var.set("Status: Select all filters")
                 return
 
+            # Create task
             task = PDFTask(
                 pdf_path=self.current_pdf,
                 value1=value1,
@@ -789,13 +1086,19 @@ class ProcessingTab(Frame):
                 value3=value3
             )
             
+            # Add to queue display
             self.queue_display.table.insert('', 'end',
                                           values=(task.pdf_path, 'Pending'),
                                           tags=('pending',))
             
+            # Add to processing queue
             self.pdf_queue.add_task(task)
             
+            # Update status and load next file
+            self.status_var.set("Status: File queued for processing")
             self.load_next_pdf()
+            
+            # Clear filters
             self.filter1_frame.set('')
             self.filter2_frame.set('')
             self.filter3_frame.set('')
@@ -803,10 +1106,16 @@ class ProcessingTab(Frame):
             self.filter3_frame.set_values(self.all_values3)
                 
         except Exception as e:
+            self.status_var.set("Status: Processing error")
             ErrorDialog(self, "Error", str(e))
 
-    def _show_error_details(self, event: Event) -> None:
-        item = self.queue_display.table.selection()[0]
+    def _show_error_details(self, event: TkEvent) -> None:
+        """Show error details for failed tasks."""
+        selection = self.queue_display.table.selection()
+        if not selection:
+            return
+            
+        item = selection[0]
         task_path = self.queue_display.table.item(item)['values'][0]
         
         with self.pdf_queue.lock:
@@ -816,26 +1125,45 @@ class ProcessingTab(Frame):
                           f"Error processing {path.basename(task_path)}:\n{task.error_msg}")
 
     def _clear_completed(self) -> None:
+        """Clear completed tasks from the queue."""
         self.pdf_queue.clear_completed()
         self.update_queue_display()
+        self.status_var.set("Status: Completed tasks cleared")
 
     def _retry_failed(self) -> None:
+        """Retry failed tasks in the queue."""
         self.pdf_queue.retry_failed()
         self.update_queue_display()
+        self.status_var.set("Status: Retrying failed tasks")
 
     def update_queue_display(self) -> None:
+        """Update the queue display with current tasks."""
         try:
             with self.pdf_queue.lock:
                 tasks = self.pdf_queue.tasks.copy()
             self.queue_display.update_display(tasks)
+            
+            # Update status with queue statistics
+            total = len(tasks)
+            completed = sum(1 for t in tasks.values() if t.status == 'completed')
+            failed = sum(1 for t in tasks.values() if t.status == 'failed')
+            pending = sum(1 for t in tasks.values() if t.status in ['pending', 'processing'])
+            
+            if total > 0:
+                self.status_var.set(
+                    f"Status: {completed} completed, {failed} failed, {pending} pending"
+                )
+            
         except Exception as e:
             print(f"Error updating queue display: {str(e)}")
 
     def _periodic_update(self) -> None:
+        """Periodically update the queue display."""
         self.update_queue_display()
         self.after(100, self._periodic_update)
 
     def __del__(self) -> None:
+        """Clean up resources when the tab is destroyed."""
         try:
             if hasattr(self, 'pdf_queue'):
                 self.pdf_queue.stop()

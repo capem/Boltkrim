@@ -220,6 +220,7 @@ class PDFManager:
                 # Clear cache if different file
                 if next_pdf != self.cached_pdf_path:
                     self.clear_cache()
+                    self.current_rotation = 0  # Reset rotation when moving to a new file
                 return next_pdf
                 
             return None
