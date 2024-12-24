@@ -1,10 +1,10 @@
 from __future__ import annotations
-from tkinter import Canvas, END, Event, Widget
+from tkinter import Canvas, END, Event as TkEvent, Widget
 from tkinter.ttk import Frame, Scrollbar, Label, Button, Style, LabelFrame, Treeview
 from PIL.ImageTk import PhotoImage
 from os import path
 from typing import Optional, Any, Dict, List, Callable
-from threading import Thread, Lock
+from threading import Thread, Lock, Event
 from dataclasses import dataclass
 from .fuzzy_search import FuzzySearchFrame
 from .error_dialog import ErrorDialog
@@ -17,6 +17,7 @@ class PDFTask:
     pdf_path: str
     value1: str
     value2: str
+    value3: str
     status: str = 'pending'  # pending, processing, failed, completed
     error_msg: str = ''
 
@@ -26,7 +27,12 @@ class ProcessingQueue:
         self.tasks: Dict[str, PDFTask] = {}
         self.lock = Lock()
         self.processing_thread: Optional[Thread] = None
-        self.stop_event = Event()
+        try:
+            self.stop_event = Event()
+        except (AttributeError, RuntimeError):
+            # Fallback for PyInstaller if Event initialization fails
+            import threading
+            self.stop_event = threading.Event()
         self.config_manager = config_manager
         self.excel_manager = excel_manager
         self.pdf_manager = pdf_manager
@@ -106,8 +112,10 @@ class ProcessingQueue:
                 row_data, row_idx = excel_manager.find_matching_row(
                     config['filter1_column'],
                     config['filter2_column'],
+                    config['filter3_column'],
                     task_to_process.value1,
-                    task_to_process.value2
+                    task_to_process.value2,
+                    task_to_process.value3
                 )
                 
                 if row_data is None:
@@ -557,16 +565,26 @@ class ProcessingTab(Frame):
         self.filter2_label.pack(pady=(0, 5))
         self.filter2_frame = FuzzySearchFrame(filters_frame, width=30,
                                             identifier='processing_filter2')
-        self.filter2_frame.pack(fill='x')
+        self.filter2_frame.pack(fill='x', pady=(0, 10))
+
+        self.filter3_label = Label(filters_frame, text="",
+                                     font=('Segoe UI', 9, 'bold'))
+        self.filter3_label.pack(pady=(0, 5))
+        self.filter3_frame = FuzzySearchFrame(filters_frame, width=30,
+                                            identifier='processing_filter3')
+        self.filter3_frame.pack(fill='x')
         
         self.filter1_frame.bind('<<ValueSelected>>', lambda e: self.on_filter1_select())
-        self.filter2_frame.bind('<<ValueSelected>>', lambda e: self.update_confirm_button())
+        self.filter2_frame.bind('<<ValueSelected>>', lambda e: self.on_filter2_select())
+        self.filter3_frame.bind('<<ValueSelected>>', lambda e: self.update_confirm_button())
 
         # Bind tab navigation
         self.filter1_frame.entry.bind('<Tab>', self._handle_filter1_tab)
         self.filter2_frame.entry.bind('<Tab>', self._handle_filter2_tab)
+        self.filter3_frame.entry.bind('<Tab>', self._handle_filter3_tab)
         self.filter1_frame.listbox.bind('<Tab>', self._handle_filter1_tab)
         self.filter2_frame.listbox.bind('<Tab>', self._handle_filter2_tab)
+        self.filter3_frame.listbox.bind('<Tab>', self._handle_filter3_tab)
 
     def _handle_filter1_tab(self, event: Event) -> str:
         """Handle tab key in filter1 to move focus to filter2."""
@@ -587,6 +605,17 @@ class ProcessingTab(Frame):
                 self.filter2_frame.listbox.selection_clear(0, END)
                 self.filter2_frame.listbox.selection_set(0)
                 self.filter2_frame._on_select(None)
+        self.confirm_button.focus_set()
+        return "break"
+
+    def _handle_filter3_tab(self, event: Event) -> str:
+        """Handle tab key in filter3 to move focus to next widget."""
+        if self.filter3_frame.listbox.winfo_ismapped():
+            # If listbox is visible, select first item
+            if self.filter3_frame.listbox.size() > 0:
+                self.filter3_frame.listbox.selection_clear(0, END)
+                self.filter3_frame.listbox.selection_set(0)
+                self.filter3_frame._on_select(None)
         self.confirm_button.focus_set()
         return "break"
 
@@ -643,7 +672,8 @@ class ProcessingTab(Frame):
         try:
             config = self.config_manager.get_config()
             if not all([config['excel_file'], config['excel_sheet'],
-                       config['filter1_column'], config['filter2_column']]):
+                       config['filter1_column'], config['filter2_column'],
+                       config['filter3_column']]):
                 print("Missing configuration values")
                 return
                 
@@ -652,13 +682,16 @@ class ProcessingTab(Frame):
             
             self.filter1_label['text'] = config['filter1_column']
             self.filter2_label['text'] = config['filter2_column']
+            self.filter3_label['text'] = config['filter3_column']
             
             df = self.excel_manager.excel_data
             self.all_values1 = sorted(df[config['filter1_column']].unique().tolist())
             self.all_values2 = sorted(df[config['filter2_column']].unique().tolist())
+            self.all_values3 = sorted(df[config['filter3_column']].unique().tolist())
             
             self.filter1_frame.set_values(self.all_values1)
             self.filter2_frame.set_values(self.all_values2)
+            self.filter3_frame.set_values(self.all_values3)
             
         except Exception as e:
             ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}")
@@ -672,14 +705,37 @@ class ProcessingTab(Frame):
                 df = self.excel_manager.excel_data
                 filtered_df = df[df[config['filter1_column']] == selected_value]
                 
-                filtered_values = sorted(filtered_df[config['filter2_column']].unique().tolist())
-                self.filter2_frame.set_values(filtered_values)
+                filtered_values2 = sorted(filtered_df[config['filter2_column']].unique().tolist())
+                self.filter2_frame.set_values(filtered_values2)
+                
+                # Clear filter3 since it depends on filter2
+                self.filter3_frame.set('')
+                self.filter3_frame.set_values(self.all_values3)
+                
+        except Exception as e:
+            ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
+
+    def on_filter2_select(self) -> None:
+        try:
+            config = self.config_manager.get_config()
+            if self.excel_manager.excel_data is not None:
+                selected_value1 = self.filter1_frame.get()
+                selected_value2 = self.filter2_frame.get()
+                
+                df = self.excel_manager.excel_data
+                filtered_df = df[
+                    (df[config['filter1_column']] == selected_value1) &
+                    (df[config['filter2_column']] == selected_value2)
+                ]
+                
+                filtered_values3 = sorted(filtered_df[config['filter3_column']].unique().tolist())
+                self.filter3_frame.set_values(filtered_values3)
                 
         except Exception as e:
             ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
 
     def update_confirm_button(self) -> None:
-        if self.filter1_frame.get() and self.filter2_frame.get():
+        if self.filter1_frame.get() and self.filter2_frame.get() and self.filter3_frame.get():
             self.confirm_button.state(['!disabled'])
         else:
             self.confirm_button.state(['disabled'])
@@ -721,14 +777,16 @@ class ProcessingTab(Frame):
         try:
             value1 = self.filter1_frame.get()
             value2 = self.filter2_frame.get()
+            value3 = self.filter3_frame.get()
             
-            if not value1 or not value2:
+            if not value1 or not value2 or not value3:
                 return
 
             task = PDFTask(
                 pdf_path=self.current_pdf,
                 value1=value1,
-                value2=value2
+                value2=value2,
+                value3=value3
             )
             
             self.queue_display.table.insert('', 'end',
@@ -740,7 +798,9 @@ class ProcessingTab(Frame):
             self.load_next_pdf()
             self.filter1_frame.set('')
             self.filter2_frame.set('')
+            self.filter3_frame.set('')
             self.filter2_frame.set_values(self.all_values2)
+            self.filter3_frame.set_values(self.all_values3)
                 
         except Exception as e:
             ErrorDialog(self, "Error", str(e))

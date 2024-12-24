@@ -1,10 +1,11 @@
 {
     "source_folder": "//192.168.0.77/tarec/Archive/SCANNER/FACTURE RECUES",
     "processed_folder": "//192.168.0.77/tarec/Archive/Archive 2023/FACTURE RECU",
-    "excel_file": "//192.168.0.77/tarec/Archive/Archive 2023/SUIVI OV CHQ OPCVM BC 2023 - Copy.xlsx",
+    "excel_file": "//192.168.0.77/tarec/Archive/Archive 2023/SUIVI OV CHQ OPCVM BC 2023.xlsx",
     "excel_sheet": "FACTURE RECU",
     "filter1_column": "FOURNISSEURS",
     "filter2_column": "FACTURES",
+    "filter3_column": "DATE FACTURE",
     "output_template": "{processed_folder}/{DATE FACTURE|date.year}/MOIS {DATE FACTURE|date.month}/{filter_2|str.slice:0:2} {filter_1} {filter_2|str.slice:2:}.pdf",
     "dropdown1_column": "FOURNISSEURS",
     "dropdown2_column": "FACTURES"

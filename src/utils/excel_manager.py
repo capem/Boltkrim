@@ -178,13 +178,14 @@ class ExcelManager:
         except Exception as e:
             raise Exception(f"Error updating Excel with PDF link: {str(e)}")
             
-    def find_matching_row(self, filter1_col: str, filter2_col: str, value1: str, value2: str) -> Tuple[Optional[Series], Optional[int]]:
+    def find_matching_row(self, filter1_col: str, filter2_col: str, filter3_col: str, value1: str, value2: str, value3: str) -> Tuple[Optional[Series], Optional[int]]:
         """Find row matching the filter values."""
         if self.excel_data is None:
             return None, None
             
         mask = (self.excel_data[filter1_col] == value1) & \
-               (self.excel_data[filter2_col] == value2)
+               (self.excel_data[filter2_col] == value2) & \
+               (self.excel_data[filter3_col] == value3)
                
         if not mask.any():
             return None, None

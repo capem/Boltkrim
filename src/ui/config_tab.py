@@ -102,6 +102,7 @@ class ConfigTab(ttk.Frame):
         column_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky='nsew')
         column_frame.grid_columnconfigure(1, weight=1)
         column_frame.grid_columnconfigure(3, weight=1)
+        column_frame.grid_columnconfigure(5, weight=1)
         
         # First Column
         ttk.Label(column_frame, text="First:", style="Section.TLabel").grid(row=0, column=0, sticky='w', pady=2)
@@ -112,6 +113,11 @@ class ConfigTab(ttk.Frame):
         ttk.Label(column_frame, text="Second:", style="Section.TLabel").grid(row=0, column=2, sticky='w', pady=2, padx=(10,0))
         self.filter2_frame = FuzzySearchFrame(column_frame, width=30, identifier='config_filter2')
         self.filter2_frame.grid(row=0, column=3, padx=2, sticky='ew')
+
+        # Third Column
+        ttk.Label(column_frame, text="Third:", style="Section.TLabel").grid(row=0, column=4, sticky='w', pady=2, padx=(10,0))
+        self.filter3_frame = FuzzySearchFrame(column_frame, width=30, identifier='config_filter3')
+        self.filter3_frame.grid(row=0, column=5, padx=2, sticky='ew')
         
         # Template Configuration
         template_frame = ttk.LabelFrame(self, text="Output Template", padding=5)
@@ -242,6 +248,7 @@ class ConfigTab(ttk.Frame):
             # Update filters with column names
             self.filter1_frame.set_values(columns)
             self.filter2_frame.set_values(columns)
+            self.filter3_frame.set_values(columns)
             
             # Set current values if they exist
             config = self.config_manager.get_config()
@@ -249,6 +256,8 @@ class ConfigTab(ttk.Frame):
                 self.filter1_frame.set(config['filter1_column'])
             if config['filter2_column'] in columns:
                 self.filter2_frame.set(config['filter2_column'])
+            if config['filter3_column'] in columns:
+                self.filter3_frame.set(config['filter3_column'])
                 
         except Exception as e:
             from .error_dialog import ErrorDialog
@@ -268,6 +277,7 @@ class ConfigTab(ttk.Frame):
                 'excel_sheet': self.sheet_combobox.get(),
                 'filter1_column': self.filter1_frame.get(),
                 'filter2_column': self.filter2_frame.get(),
+                'filter3_column': self.filter3_frame.get(),
                 'dropdown1_column': self.filter1_frame.get(),  # Keep backward compatibility
                 'dropdown2_column': self.filter2_frame.get(),   # Keep backward compatibility
                 'output_template': self.template_entry.get()
@@ -277,7 +287,7 @@ class ConfigTab(ttk.Frame):
             if not all([new_config['source_folder'], new_config['processed_folder'], 
                        new_config['excel_file'], new_config['excel_sheet'],
                        new_config['filter1_column'], new_config['filter2_column'],
-                       new_config['output_template']]):
+                       new_config['filter3_column'], new_config['output_template']]):
                 self.show_status_message("Please fill in all required fields", is_error=True)
                 return
                 
