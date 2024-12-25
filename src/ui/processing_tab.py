@@ -184,19 +184,32 @@ class ProcessingQueue:
                     original_dir = path.dirname(task_to_process.pdf_path)
                     original_path = path.join(original_dir, original_name)
                     
-                    # Check Excel hyperlink first before moving any files
+                    # First rename the file in its original location if needed
+                    if task_to_process.pdf_path != original_path:
+                        try:
+                            if path.exists(original_path):
+                                raise Exception("A file with this name already exists in the original location")
+                            import os
+                            os.rename(task_to_process.pdf_path, original_path)
+                            print(f"[DEBUG] Renamed file to: {original_path}")
+                        except Exception as e:
+                            raise Exception(f"Failed to rename file: {str(e)}")
+                    else:
+                        print(f"[DEBUG] File already has the correct name: {original_path}")
+
+                    # Now check Excel hyperlink after file is in the correct location
                     max_retries = 3
                     retry_delay = 1  # seconds
                     should_move_to_processed = True
                     
                     for retry in range(max_retries):
                         try:
-                            # First check if hyperlink exists using the current file path
+                            # Check if hyperlink exists using the current file path
                             success, has_existing_link = excel_manager.update_pdf_link(
                                 config['excel_file'],
                                 config['excel_sheet'],
                                 row_idx,
-                                task_to_process.pdf_path,  # Use current file path for checking
+                                original_path,  # Use the path where the file is now
                                 config['filter2_column'],
                                 force=False
                             )
@@ -207,25 +220,11 @@ class ProcessingQueue:
                                             "A hyperlink already exists in this cell. Do you want to overwrite it?"):
                                     # User chose not to overwrite, keep file in original location
                                     should_move_to_processed = False
-                                    
-                                    # Just rename the file in its original location if needed
-                                    try:
-                                        # Check if the file already has the correct name
-                                        if task_to_process.pdf_path != original_path:
-                                            if path.exists(original_path):
-                                                raise Exception("A file with this name already exists in the original location")
-                                            import os
-                                            os.rename(task_to_process.pdf_path, original_path)
-                                            print(f"[DEBUG] Renamed file to: {original_path}")
-                                        else:
-                                            print(f"[DEBUG] File already has the correct name: {original_path}")
-                                        break  # Exit the retry loop since we're not updating Excel
-                                    except Exception as e:
-                                        raise Exception(f"Failed to rename file: {str(e)}")
+                                    break  # Exit the retry loop since we're not updating Excel
                                 else:
                                     # Move file to processed location first
                                     if not self.pdf_manager.process_pdf(
-                                        task_to_process.pdf_path,
+                                        original_path,  # Use renamed path as source
                                         template_data,
                                         config['processed_folder'],
                                         config['output_template']
@@ -255,7 +254,7 @@ class ProcessingQueue:
                                 # No existing hyperlink, proceed with normal processing
                                 # Move file to processed location
                                 if not self.pdf_manager.process_pdf(
-                                    task_to_process.pdf_path,
+                                    original_path,  # Use renamed path as source
                                     template_data,
                                     config['processed_folder'],
                                     config['output_template']
