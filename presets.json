@@ -17,6 +17,6 @@
         "filter1_column": "FRS",
         "filter2_column": "OV",
         "filter3_column": "DATE EXC",
-        "output_template": "{processed_folder}/{FRS}/OV {FRS} {FA}.pdf"
+        "output_template": "{processed_folder}/{filter_1}/OV {filter_1} {FA}.pdf"
     }
 }

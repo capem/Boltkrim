@@ -141,27 +141,33 @@ class ProcessingQueue:
                     'filter1': row_data[config['filter1_column']],
                     'filter2': row_data[config['filter2_column']],
                     'filter_1': row_data[config['filter1_column']],  # For backward compatibility
-                    'filter_2': row_data[config['filter2_column']]   # For backward compatibility
+                    'filter_2': row_data[config['filter2_column']],  # For backward compatibility
+                    config['filter1_column']: row_data[config['filter1_column']],  # Direct column access
+                    config['filter2_column']: row_data[config['filter2_column']],  # Direct column access
+                    config['filter3_column']: row_data[config['filter3_column']]   # Direct column access
                 }
                 
-                # Add DATE FACTURE from Excel if it exists
-                if 'DATE FACTURE' in row_data:
-                    # Try to parse the date from Excel
-                    try:
-                        if isinstance(row_data['DATE FACTURE'], datetime):
-                            template_data['DATE FACTURE'] = row_data['DATE FACTURE']
-                        else:
-                            # Try to parse the date string (add more formats if needed)
-                            for date_format in ['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%Y/%m/%d']:
-                                try:
-                                    template_data['DATE FACTURE'] = datetime.strptime(str(row_data['DATE FACTURE']), date_format)
-                                    break
-                                except ValueError:
-                                    continue
-                            if 'DATE FACTURE' not in template_data:
-                                raise ValueError(f"Could not parse date: {row_data['DATE FACTURE']}")
-                    except Exception as e:
-                        raise Exception(f"Error processing DATE FACTURE: {str(e)}")
+                # Handle date fields generically
+                for col in row_data.index:
+                    if isinstance(row_data[col], datetime):
+                        template_data[col] = row_data[col]
+                    elif 'DATE' in col.upper() or 'DT' in col.upper():
+                        # Try to parse potential date fields
+                        try:
+                            if pd.notnull(row_data[col]):
+                                for date_format in ['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%Y/%m/%d']:
+                                    try:
+                                        template_data[col] = datetime.strptime(str(row_data[col]), date_format)
+                                        break
+                                    except ValueError:
+                                        continue
+                        except Exception as e:
+                            print(f"[DEBUG] Failed to parse date in column {col}: {str(e)}")
+                            # Don't raise an error, just keep the original value
+                            template_data[col] = row_data[col]
+                    else:
+                        # Copy non-date fields as is
+                        template_data[col] = row_data[col]
                 
                 try:
                     # Process the PDF with template-based naming
@@ -188,7 +194,8 @@ class ProcessingQueue:
                                 config['excel_file'],
                                 config['excel_sheet'],
                                 row_idx,
-                                output_path
+                                output_path,
+                                config['filter2_column']
                             )
                             break
                         except Exception as e:

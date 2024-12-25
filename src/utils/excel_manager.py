@@ -6,6 +6,7 @@ from socket import socket, AF_INET, SOCK_STREAM, getdefaulttimeout, setdefaultti
 from typing import Optional, List, Tuple
 from time import sleep
 from random import uniform
+import pandas as pd
 
 def is_path_available(filepath: str, timeout: int = 2) -> bool:
     """Check if a network path is available with timeout.
@@ -112,7 +113,7 @@ class ExcelManager:
             raise Exception(f"Error loading Excel data: {str(e)}")
     
     @retry_with_backoff
-    def update_pdf_link(self, excel_file: str, sheet_name: str, row_idx: int, pdf_path: str) -> bool:
+    def update_pdf_link(self, excel_file: str, sheet_name: str, row_idx: int, pdf_path: str, filter2_col: str) -> bool:
         """Update Excel with PDF link. Returns True if update was successful, False if file was locked."""
         if not path.exists(excel_file):
             raise FileNotFoundError(f"Excel file not found: {excel_file}")
@@ -120,53 +121,72 @@ class ExcelManager:
         if not path.exists(pdf_path):
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
             
+        print(f"[DEBUG] Updating Excel link in {sheet_name}, row {row_idx + 2}, column {filter2_col}")
+        
         # Create backup of the Excel file
         backup_file = excel_file + '.bak'
         wb = None
         
         try:
+            print("[DEBUG] Creating backup file")
             copy2(excel_file, backup_file)
             
             # Initialize Excel application
             if self.excel_app is None:
+                print("[DEBUG] Initializing Excel application")
                 self.excel_app = Dispatch("Excel.Application")
                 self.excel_app.Visible = False
                 self.excel_app.DisplayAlerts = False
             
             try:
                 # Open the workbook with read/write access
+                print("[DEBUG] Opening workbook")
                 wb = self.excel_app.Workbooks.Open(
                     excel_file,
                     UpdateLinks=False,
                     ReadOnly=False
                 )
+                print("[DEBUG] Getting worksheet")
                 ws = wb.Worksheets(sheet_name)
                 
-                # Find the FACTURES column
-                factures_col = None
+                # Find the target column for the PDF link
+                print("[DEBUG] Finding target column")
+                target_col = None
                 for col in range(1, ws.UsedRange.Columns.Count + 1):
-                    if ws.Cells(1, col).Value == "FACTURES":
-                        factures_col = col
+                    header_value = ws.Cells(1, col).Value
+                    print(f"[DEBUG] Column {col} header: {header_value}")
+                    if header_value == filter2_col:
+                        target_col = col
                         break
                 
-                if factures_col is None:
-                    raise Exception("FACTURES column not found in Excel sheet")
+                if target_col is None:
+                    raise Exception(f"Column {filter2_col} not found in Excel sheet")
+                
+                print(f"[DEBUG] Target column found at position {target_col}")
                 
                 # Create relative path for Excel link
                 rel_path = path.relpath(
                     pdf_path,
                     path.dirname(excel_file)
                 )
+                print(f"[DEBUG] Created relative path: {rel_path}")
                 
                 # Get the cell and add hyperlink
-                cell = ws.Cells(row_idx + 2, factures_col)
+                print(f"[DEBUG] Accessing cell at row {row_idx + 2}, column {target_col}")
+                cell = ws.Cells(row_idx + 2, target_col)
                 original_value = cell.Value
+                print(f"[DEBUG] Original cell value: {original_value}")
                 
                 # Remove existing hyperlink if any
-                if cell.Hyperlinks.Count > 0:
-                    cell.Hyperlinks.Delete()
+                try:
+                    if cell.Hyperlinks.Count > 0:
+                        print("[DEBUG] Removing existing hyperlink")
+                        cell.Hyperlinks.Delete()
+                except Exception as e:
+                    print(f"[DEBUG] Error removing hyperlink: {str(e)}")
                 
                 # Add new hyperlink while preserving the cell value
+                print("[DEBUG] Adding new hyperlink")
                 ws.Hyperlinks.Add(
                     Anchor=cell,
                     Address=rel_path,
@@ -174,36 +194,46 @@ class ExcelManager:
                 )
                 
                 # Save and close
+                print("[DEBUG] Saving workbook")
                 wb.Save()
+                print("[DEBUG] Closing workbook")
                 wb.Close(SaveChanges=True)
                 wb = None
                 
                 # Delete backup if everything succeeded
                 if path.exists(backup_file):
+                    print("[DEBUG] Removing backup file")
                     remove(backup_file)
                     
+                print("[DEBUG] Excel update completed successfully")
                 return True
                     
             except pywintypes.com_error as e:
+                print(f"[DEBUG] COM error: {str(e)}")
                 # Handle specific COM errors
                 if e.hresult == -2147352567:  # File is locked for editing
+                    print("[DEBUG] Excel file is locked for editing")
                     return False  # Return False to indicate file was locked
                 elif e.hresult == -2147417848:  # Excel automation server error
                     if self.excel_app:
+                        print("[DEBUG] Excel automation error, quitting Excel")
                         self.excel_app.Quit()
                         self.excel_app = None
                 raise
                     
         except Exception as e:
+            print(f"[DEBUG] Error in update_pdf_link: {str(e)}")
             # Restore from backup if something went wrong
             if wb:
                 try:
+                    print("[DEBUG] Closing workbook without saving due to error")
                     wb.Close(SaveChanges=False)
                 except:
                     pass
                     
             if path.exists(backup_file):
                 try:
+                    print("[DEBUG] Restoring from backup")
                     copy2(backup_file, excel_file)
                 except:
                     pass
@@ -213,12 +243,14 @@ class ExcelManager:
             # Clean up
             if wb:
                 try:
+                    print("[DEBUG] Cleanup: Closing workbook")
                     wb.Close(SaveChanges=False)
                 except:
                     pass
                     
             if path.exists(backup_file):
                 try:
+                    print("[DEBUG] Cleanup: Removing backup file")
                     remove(backup_file)
                 except:
                     pass
@@ -252,14 +284,61 @@ class ExcelManager:
         if self.excel_data is None:
             return None, None
             
-        mask = (self.excel_data[filter1_col] == value1) & \
-               (self.excel_data[filter2_col] == value2) & \
-               (self.excel_data[filter3_col] == value3)
-               
+        # Convert all columns to string and strip whitespace
+        df = self.excel_data.copy()
+        
+        # Handle datetime columns specially
+        for col, val in [(filter1_col, value1), (filter2_col, value2), (filter3_col, value3)]:
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                print(f"[DEBUG] Column {col} is datetime type")
+                # Keep datetime type for the column
+                continue
+            else:
+                # Convert to string and strip for non-datetime columns
+                df[col] = df[col].astype(str).str.strip()
+        
+        # Convert and strip input values, except for datetime columns
+        value1 = str(value1).strip()
+        value2 = str(value2).strip()
+        value3 = str(value3).strip()
+        
+        print(f"[DEBUG] Looking for combination: {value1} | {value2} | {value3}")
+        print(f"[DEBUG] In columns: {filter1_col} | {filter2_col} | {filter3_col}")
+        print(f"[DEBUG] Column types: {df[filter1_col].dtype} | {df[filter2_col].dtype} | {df[filter3_col].dtype}")
+        
+        # Create the mask for each condition and combine them
+        def create_mask(col: str, value: str) -> pd.Series:
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                try:
+                    # Try parsing the value as datetime for datetime columns
+                    parsed_date = pd.to_datetime(value)
+                    return df[col].dt.date == parsed_date.date()
+                except Exception as e:
+                    print(f"[DEBUG] Failed to parse date for {col}: {str(e)}")
+                    return pd.Series(False, index=df.index)
+            else:
+                return df[col] == value
+        
+        mask1 = create_mask(filter1_col, value1)
+        mask2 = create_mask(filter2_col, value2)
+        mask3 = create_mask(filter3_col, value3)
+        
+        mask = mask1 & mask2 & mask3
+        
         if not mask.any():
+            # Debug output to help identify the issue
+            matching_rows = df[mask1 & mask2]  # Show rows that match first two conditions
+            if not matching_rows.empty:
+                print(f"[DEBUG] Found rows matching first two conditions:")
+                print(f"[DEBUG] {matching_rows[[filter1_col, filter2_col, filter3_col]].to_string()}")
+                print(f"[DEBUG] Available values in filtered rows: {matching_rows[filter3_col].unique().tolist()}")
+            else:
+                print("[DEBUG] No rows match even the first two conditions")
+                print(f"[DEBUG] Values in first column ({filter1_col}): {df[filter1_col].unique().tolist()[:5]}...")
+                print(f"[DEBUG] Values in second column ({filter2_col}): {df[filter2_col].unique().tolist()[:5]}...")
             return None, None
             
-        return self.excel_data[mask].iloc[0], mask.idxmax()
+        return df[mask].iloc[0], mask.idxmax()
 
     def __del__(self) -> None:
         """Cleanup Excel application on object destruction"""
