@@ -1,4 +1,4 @@
-from tkinter import LEFT, END
+from tkinter import LEFT, END, StringVar
 from tkinter import ttk, filedialog
 from .fuzzy_search import FuzzySearchFrame
 
@@ -54,15 +54,48 @@ class ConfigTab(ttk.Frame):
         
     def setup_ui(self):
         """Create and setup the configuration UI."""
+        # Configure grid weights for proper layout
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
+        
         # Main Title
         title = ttk.Label(self, 
                          text="Configuration Settings",
                          style="Title.TLabel")
         title.grid(row=0, column=0, columnspan=2, pady=(10,5), sticky='n')
         
+        # Create a frame for the main content to manage layout better
+        main_content = ttk.Frame(self)
+        main_content.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
+        main_content.grid_columnconfigure(0, weight=1)
+        main_content.grid_columnconfigure(1, weight=1)
+        
+        # Preset Configuration Frame
+        preset_frame = ttk.LabelFrame(main_content, text="Preset Configurations", padding=5)
+        preset_frame.grid(row=0, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
+        preset_frame.grid_columnconfigure(1, weight=1)
+        
+        # Preset Selector
+        ttk.Label(preset_frame, text="Preset:", style="Section.TLabel").grid(row=0, column=0, sticky='w', pady=2)
+        self.preset_var = StringVar()
+        self.preset_combobox = ttk.Combobox(preset_frame, textvariable=self.preset_var, state='readonly')
+        self.preset_combobox.grid(row=0, column=1, padx=2, sticky='ew')
+        self.preset_combobox.bind('<<ComboboxSelected>>', self.load_preset)
+        
+        # Preset Buttons Frame
+        preset_buttons_frame = ttk.Frame(preset_frame)
+        preset_buttons_frame.grid(row=0, column=2, padx=5)
+        
+        ttk.Button(preset_buttons_frame, text="Save As Preset", 
+                  style="Action.TButton",
+                  command=self.save_as_preset).pack(side='left', padx=2)
+        ttk.Button(preset_buttons_frame, text="Delete Preset",
+                  style="Action.TButton",
+                  command=self.delete_preset).pack(side='left', padx=2)
+        
         # Left Column - Folder Settings
-        folder_frame = ttk.LabelFrame(self, text="Folder Settings", padding=5)
-        folder_frame.grid(row=1, column=0, padx=5, pady=5, sticky='nsew')
+        folder_frame = ttk.LabelFrame(main_content, text="Folder Settings", padding=5)
+        folder_frame.grid(row=1, column=0, sticky='nsew', padx=5, pady=5)
         folder_frame.grid_columnconfigure(1, weight=1)
         
         # Source Folder
@@ -80,8 +113,8 @@ class ConfigTab(ttk.Frame):
                   command=self.select_processed_folder).grid(row=1, column=2)
         
         # Right Column - Excel Configuration
-        excel_frame = ttk.LabelFrame(self, text="Excel Configuration", padding=5)
-        excel_frame.grid(row=1, column=1, padx=5, pady=5, sticky='nsew')
+        excel_frame = ttk.LabelFrame(main_content, text="Excel Configuration", padding=5)
+        excel_frame.grid(row=1, column=1, sticky='nsew', padx=5, pady=5)
         excel_frame.grid_columnconfigure(1, weight=1)
         
         # Excel File
@@ -98,8 +131,8 @@ class ConfigTab(ttk.Frame):
         self.sheet_combobox.bind('<<ComboboxSelected>>', lambda e: self.update_column_lists())
         
         # Column Configuration - Full Width
-        column_frame = ttk.LabelFrame(self, text="Column Configuration", padding=5)
-        column_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky='nsew')
+        column_frame = ttk.LabelFrame(main_content, text="Column Configuration", padding=5)
+        column_frame.grid(row=2, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
         column_frame.grid_columnconfigure(1, weight=1)
         column_frame.grid_columnconfigure(3, weight=1)
         column_frame.grid_columnconfigure(5, weight=1)
@@ -113,15 +146,15 @@ class ConfigTab(ttk.Frame):
         ttk.Label(column_frame, text="Second:", style="Section.TLabel").grid(row=0, column=2, sticky='w', pady=2, padx=(10,0))
         self.filter2_frame = FuzzySearchFrame(column_frame, width=30, identifier='config_filter2')
         self.filter2_frame.grid(row=0, column=3, padx=2, sticky='ew')
-
+        
         # Third Column
         ttk.Label(column_frame, text="Third:", style="Section.TLabel").grid(row=0, column=4, sticky='w', pady=2, padx=(10,0))
         self.filter3_frame = FuzzySearchFrame(column_frame, width=30, identifier='config_filter3')
         self.filter3_frame.grid(row=0, column=5, padx=2, sticky='ew')
         
         # Template Configuration
-        template_frame = ttk.LabelFrame(self, text="Output Template", padding=5)
-        template_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky='nsew')
+        template_frame = ttk.LabelFrame(main_content, text="Output Template", padding=5)
+        template_frame.grid(row=3, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
         template_frame.grid_columnconfigure(0, weight=1)
         
         # Template help text
@@ -151,7 +184,7 @@ class ConfigTab(ttk.Frame):
         self.template_entry.grid(row=2, column=0, sticky='ew', pady=(0,5))
         
         # Bottom Frame for Save Button and Status
-        bottom_frame = ttk.Frame(self)
+        bottom_frame = ttk.Frame(main_content)
         bottom_frame.grid(row=4, column=0, columnspan=2, pady=5)
         
         # Save Button and Status Label side by side
@@ -178,6 +211,7 @@ class ConfigTab(ttk.Frame):
 
     def load_current_config(self):
         """Load current configuration into UI elements."""
+        self.update_preset_list()
         config = self.config_manager.get_config()
         self.source_folder_entry.insert(0, config['source_folder'])
         self.processed_folder_entry.insert(0, config['processed_folder'])
@@ -241,9 +275,13 @@ class ConfigTab(ttk.Frame):
             if not excel_file or not sheet_name:
                 return
                 
+            print(f"[DEBUG] Loading Excel data from file: {excel_file}, sheet: {sheet_name}")
+            
             # Load Excel data
             self.excel_manager.load_excel_data(excel_file, sheet_name)
             columns = self.excel_manager.get_column_names()
+            print(f"[DEBUG] Retrieved columns: {columns}")
+            print(f"[DEBUG] Column types: {[type(col) for col in columns]}")
             
             # Update filters with column names
             self.filter1_frame.set_values(columns)
@@ -252,16 +290,40 @@ class ConfigTab(ttk.Frame):
             
             # Set current values if they exist
             config = self.config_manager.get_config()
-            if config['filter1_column'] in columns:
+            print(f"[DEBUG] Current config filter values:")
+            print(f"  filter1_column: {config.get('filter1_column')} (type: {type(config.get('filter1_column'))})")
+            print(f"  filter2_column: {config.get('filter2_column')} (type: {type(config.get('filter2_column'))})")
+            print(f"  filter3_column: {config.get('filter3_column')} (type: {type(config.get('filter3_column'))})")
+            
+            # Helper function to safely check column existence
+            def safe_column_match(column_value, available_columns):
+                if not column_value:
+                    return False
+                # Convert both to strings for comparison
+                column_str = str(column_value).strip()
+                print(f"[DEBUG] Comparing column value: '{column_str}' (type: {type(column_str)})")
+                print(f"[DEBUG] Against available columns: {[str(col).strip() for col in available_columns]}")
+                match = any(str(col).strip() == column_str for col in available_columns)
+                print(f"[DEBUG] Match found: {match}")
+                return match
+            
+            # Safely set column values
+            if safe_column_match(config.get('filter1_column'), columns):
+                print(f"[DEBUG] Setting filter1 to: {config['filter1_column']}")
                 self.filter1_frame.set(config['filter1_column'])
-            if config['filter2_column'] in columns:
+            if safe_column_match(config.get('filter2_column'), columns):
+                print(f"[DEBUG] Setting filter2 to: {config['filter2_column']}")
                 self.filter2_frame.set(config['filter2_column'])
-            if config['filter3_column'] in columns:
+            if safe_column_match(config.get('filter3_column'), columns):
+                print(f"[DEBUG] Setting filter3 to: {config['filter3_column']}")
                 self.filter3_frame.set(config['filter3_column'])
                 
         except Exception as e:
+            import traceback
+            print(f"[DEBUG] Error in update_column_lists:")
+            print(traceback.format_exc())
             from .error_dialog import ErrorDialog
-            ErrorDialog(self, "Error", f"Error updating column lists: {str(e)}")
+            ErrorDialog(self, "Error", f"Error updating column lists: {str(e)}\n\nFull traceback:\n{traceback.format_exc()}")
             
     def add_config_change_callback(self, callback):
         """Add a callback to be called when config changes."""
@@ -301,3 +363,102 @@ class ConfigTab(ttk.Frame):
             
         except Exception as e:
             self.show_status_message(f"Error saving configuration: {str(e)}", is_error=True)
+
+    def load_preset(self, event=None):
+        """Load the selected preset configuration."""
+        try:
+            preset_name = self.preset_var.get()
+            if not preset_name:
+                return
+                
+            print(f"[DEBUG] Loading preset: {preset_name}")
+            preset_config = self.config_manager.get_preset(preset_name)
+            if not preset_config:
+                print(f"[DEBUG] No preset found for name: {preset_name}")
+                return
+                
+            print(f"[DEBUG] Preset config loaded: {preset_config}")
+            
+            # Clear existing values
+            self.source_folder_entry.delete(0, END)
+            self.processed_folder_entry.delete(0, END)
+            self.excel_file_entry.delete(0, END)
+            self.template_entry.delete(0, END)
+            
+            # Load preset values
+            self.source_folder_entry.insert(0, preset_config.get('source_folder', ''))
+            self.processed_folder_entry.insert(0, preset_config.get('processed_folder', ''))
+            self.excel_file_entry.insert(0, preset_config.get('excel_file', ''))
+            self.template_entry.insert(0, preset_config.get('output_template', ''))
+            
+            # Update Excel-related fields
+            if preset_config.get('excel_file'):
+                print(f"[DEBUG] Loading Excel file from preset: {preset_config['excel_file']}")
+                try:
+                    self.update_sheet_list()
+                    if preset_config.get('excel_sheet'):
+                        print(f"[DEBUG] Setting sheet to: {preset_config['excel_sheet']}")
+                        self.sheet_combobox.set(preset_config['excel_sheet'])
+                except Exception as e:
+                    import traceback
+                    print(f"[DEBUG] Error loading Excel data:")
+                    print(traceback.format_exc())
+                    from .error_dialog import ErrorDialog
+                    ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}\n\nFull traceback:\n{traceback.format_exc()}")
+                    return
+                    
+            self.show_status_message(f"Loaded preset: {preset_name}")
+            
+        except Exception as e:
+            import traceback
+            print(f"[DEBUG] Error in load_preset:")
+            print(traceback.format_exc())
+            self.show_status_message(f"Error loading preset: {str(e)}", is_error=True)
+        
+    def save_as_preset(self):
+        """Save current configuration as a new preset."""
+        from tkinter import simpledialog
+        
+        preset_name = simpledialog.askstring("Save Preset", 
+                                           "Enter a name for this preset configuration:",
+                                           parent=self)
+        if not preset_name:
+            return
+            
+        current_config = {
+            'source_folder': self.source_folder_entry.get(),
+            'processed_folder': self.processed_folder_entry.get(),
+            'excel_file': self.excel_file_entry.get(),
+            'excel_sheet': self.sheet_combobox.get(),
+            'filter1_column': self.filter1_frame.get(),
+            'filter2_column': self.filter2_frame.get(),
+            'filter3_column': self.filter3_frame.get(),
+            'output_template': self.template_entry.get()
+        }
+        
+        self.config_manager.save_preset(preset_name, current_config)
+        self.update_preset_list()
+        self.preset_var.set(preset_name)
+        self.show_status_message(f"Saved preset: {preset_name}")
+        
+    def delete_preset(self):
+        """Delete the currently selected preset."""
+        preset_name = self.preset_var.get()
+        if not preset_name:
+            self.show_status_message("No preset selected", is_error=True)
+            return
+            
+        from tkinter import messagebox
+        if messagebox.askyesno("Delete Preset",
+                              f"Are you sure you want to delete the preset '{preset_name}'?",
+                              parent=self):
+            self.config_manager.delete_preset(preset_name)
+            self.update_preset_list()
+            self.show_status_message(f"Deleted preset: {preset_name}")
+            
+    def update_preset_list(self):
+        """Update the list of available presets in the combobox."""
+        presets = self.config_manager.get_preset_names()
+        self.preset_combobox['values'] = presets
+        if not self.preset_var.get() in presets:
+            self.preset_var.set('')

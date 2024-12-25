@@ -10,6 +10,7 @@ from .fuzzy_search import FuzzySearchFrame
 from .error_dialog import ErrorDialog
 import pythoncom
 from datetime import datetime
+import pandas as pd
 
 # Data Models
 @dataclass
@@ -968,27 +969,46 @@ class ProcessingTab(Frame):
             self.filter3_label['text'] = config['filter3_column']
             
             df = self.excel_manager.excel_data
-            self.all_values1 = sorted(df[config['filter1_column']].unique().tolist())
-            self.all_values2 = sorted(df[config['filter2_column']].unique().tolist())
-            self.all_values3 = sorted(df[config['filter3_column']].unique().tolist())
+            
+            # Convert all values to strings to ensure consistent type handling
+            def safe_convert_to_str(val):
+                if pd.isna(val):  # Handle NaN/None values
+                    return ""
+                return str(val).strip()
+            
+            # Convert column values to strings
+            self.all_values1 = sorted(df[config['filter1_column']].astype(str).unique().tolist())
+            self.all_values2 = sorted(df[config['filter2_column']].astype(str).unique().tolist())
+            self.all_values3 = sorted(df[config['filter3_column']].astype(str).unique().tolist())
+            
+            # Strip whitespace and ensure string type
+            self.all_values1 = [safe_convert_to_str(x) for x in self.all_values1]
+            self.all_values2 = [safe_convert_to_str(x) for x in self.all_values2]
+            self.all_values3 = [safe_convert_to_str(x) for x in self.all_values3]
             
             self.filter1_frame.set_values(self.all_values1)
             self.filter2_frame.set_values(self.all_values2)
             self.filter3_frame.set_values(self.all_values3)
             
         except Exception as e:
+            import traceback
+            print(f"[DEBUG] Error in load_excel_data:")
+            print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}")
 
     def on_filter1_select(self) -> None:
         try:
             config = self.config_manager.get_config()
             if self.excel_manager.excel_data is not None:
-                selected_value = self.filter1_frame.get()
+                selected_value = str(self.filter1_frame.get()).strip()
                 
                 df = self.excel_manager.excel_data
-                filtered_df = df[df[config['filter1_column']] == selected_value]
+                # Convert column to string for comparison
+                df[config['filter1_column']] = df[config['filter1_column']].astype(str)
+                filtered_df = df[df[config['filter1_column']].str.strip() == selected_value]
                 
-                filtered_values2 = sorted(filtered_df[config['filter2_column']].unique().tolist())
+                filtered_values2 = sorted(filtered_df[config['filter2_column']].astype(str).unique().tolist())
+                filtered_values2 = [str(x).strip() for x in filtered_values2]
                 self.filter2_frame.set_values(filtered_values2)
                 
                 # Clear filter3 since it depends on filter2
@@ -996,25 +1016,36 @@ class ProcessingTab(Frame):
                 self.filter3_frame.set_values(self.all_values3)
                 
         except Exception as e:
+            import traceback
+            print(f"[DEBUG] Error in on_filter1_select:")
+            print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
 
     def on_filter2_select(self) -> None:
         try:
             config = self.config_manager.get_config()
             if self.excel_manager.excel_data is not None:
-                selected_value1 = self.filter1_frame.get()
-                selected_value2 = self.filter2_frame.get()
+                selected_value1 = str(self.filter1_frame.get()).strip()
+                selected_value2 = str(self.filter2_frame.get()).strip()
                 
                 df = self.excel_manager.excel_data
+                # Convert columns to string for comparison
+                df[config['filter1_column']] = df[config['filter1_column']].astype(str)
+                df[config['filter2_column']] = df[config['filter2_column']].astype(str)
+                
                 filtered_df = df[
-                    (df[config['filter1_column']] == selected_value1) &
-                    (df[config['filter2_column']] == selected_value2)
+                    (df[config['filter1_column']].str.strip() == selected_value1) &
+                    (df[config['filter2_column']].str.strip() == selected_value2)
                 ]
                 
-                filtered_values3 = sorted(filtered_df[config['filter3_column']].unique().tolist())
+                filtered_values3 = sorted(filtered_df[config['filter3_column']].astype(str).unique().tolist())
+                filtered_values3 = [str(x).strip() for x in filtered_values3]
                 self.filter3_frame.set_values(filtered_values3)
                 
         except Exception as e:
+            import traceback
+            print(f"[DEBUG] Error in on_filter2_select:")
+            print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
 
     def update_confirm_button(self) -> None:
@@ -1046,6 +1077,14 @@ class ProcessingTab(Frame):
                 self.status_var.set("Status: Source folder not configured")
                 return
                 
+            # Clear current display if no PDF is loaded
+            if not path.exists(config['source_folder']):
+                self.current_pdf = None
+                self.file_info['text'] = "Source folder not found"
+                self.status_var.set("Status: Source folder does not exist")
+                ErrorDialog(self, "Error", f"Source folder not found: {config['source_folder']}")
+                return
+                
             next_pdf = self.pdf_manager.get_next_pdf(config['source_folder'])
             if next_pdf:
                 self.current_pdf = next_pdf
@@ -1056,17 +1095,32 @@ class ProcessingTab(Frame):
                 self.filter1_frame.focus_set()
                 self.status_var.set("Status: New file loaded")
             else:
+                self.current_pdf = None
                 self.file_info['text'] = "No PDF files found"
                 self.status_var.set("Status: No files to process")
+                # Clear the PDF viewer
+                if hasattr(self.pdf_viewer, 'canvas'):
+                    self.pdf_viewer.canvas.delete("all")
+                # Disable the confirm button since there's no file to process
+                self.confirm_button.state(['disabled'])
                 
         except Exception as e:
+            import traceback
+            print(f"[DEBUG] Error in load_next_pdf:")
+            print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading next PDF: {str(e)}")
 
     def process_current_file(self) -> None:
         """Process the current PDF file with selected filters."""
-        if not self.current_pdf or not path.exists(self.current_pdf):
+        if not self.current_pdf:
             self.status_var.set("Status: No file loaded")
             ErrorDialog(self, "Error", "No PDF file loaded")
+            return
+            
+        if not path.exists(self.current_pdf):
+            self.status_var.set("Status: File no longer exists")
+            ErrorDialog(self, "Error", f"File no longer exists: {self.current_pdf}")
+            self.load_next_pdf()  # Try to load the next file
             return
             
         try:
@@ -1106,6 +1160,9 @@ class ProcessingTab(Frame):
             self.filter3_frame.set_values(self.all_values3)
                 
         except Exception as e:
+            import traceback
+            print(f"[DEBUG] Error in process_current_file:")
+            print(traceback.format_exc())
             self.status_var.set("Status: Processing error")
             ErrorDialog(self, "Error", str(e))
 
