@@ -11,6 +11,7 @@ from .error_dialog import ErrorDialog
 import pythoncom
 from datetime import datetime
 import pandas as pd
+from tkinter.messagebox import showerror, askyesno
 
 # Data Models
 @dataclass
@@ -170,33 +171,108 @@ class ProcessingQueue:
                         template_data[col] = row_data[col]
                 
                 try:
-                    # Process the PDF with template-based naming
-                    if not self.pdf_manager.process_pdf(
-                        task_to_process.pdf_path,
-                        template_data,
-                        config['processed_folder'],
-                        config['output_template']
-                    ):
-                        raise Exception("PDF processing failed")
-                        
-                    # Get the actual output path for Excel update
-                    output_path = self.pdf_manager.generate_output_path(
+                    # Add processed_folder to template data
+                    template_data['processed_folder'] = config['processed_folder']
+                    
+                    # Generate both paths - one for original location and one for processed location
+                    processed_path = self.pdf_manager.generate_output_path(
                         config['output_template'],
                         template_data
                     )
                     
-                    # Update Excel with retries for shared file access
+                    original_name = path.basename(processed_path)
+                    original_dir = path.dirname(task_to_process.pdf_path)
+                    original_path = path.join(original_dir, original_name)
+                    
+                    # Check Excel hyperlink first before moving any files
                     max_retries = 3
                     retry_delay = 1  # seconds
+                    should_move_to_processed = True
+                    
                     for retry in range(max_retries):
                         try:
-                            excel_manager.update_pdf_link(
+                            # First check if hyperlink exists using the current file path
+                            success, has_existing_link = excel_manager.update_pdf_link(
                                 config['excel_file'],
                                 config['excel_sheet'],
                                 row_idx,
-                                output_path,
-                                config['filter2_column']
+                                task_to_process.pdf_path,  # Use current file path for checking
+                                config['filter2_column'],
+                                force=False
                             )
+                            
+                            if success and has_existing_link:
+                                # Ask user for confirmation
+                                if not askyesno("Warning", 
+                                            "A hyperlink already exists in this cell. Do you want to overwrite it?"):
+                                    # User chose not to overwrite, keep file in original location
+                                    should_move_to_processed = False
+                                    
+                                    # Just rename the file in its original location if needed
+                                    try:
+                                        # Check if the file already has the correct name
+                                        if task_to_process.pdf_path != original_path:
+                                            if path.exists(original_path):
+                                                raise Exception("A file with this name already exists in the original location")
+                                            import os
+                                            os.rename(task_to_process.pdf_path, original_path)
+                                            print(f"[DEBUG] Renamed file to: {original_path}")
+                                        else:
+                                            print(f"[DEBUG] File already has the correct name: {original_path}")
+                                        break  # Exit the retry loop since we're not updating Excel
+                                    except Exception as e:
+                                        raise Exception(f"Failed to rename file: {str(e)}")
+                                else:
+                                    # Move file to processed location first
+                                    if not self.pdf_manager.process_pdf(
+                                        task_to_process.pdf_path,
+                                        template_data,
+                                        config['processed_folder'],
+                                        config['output_template']
+                                    ):
+                                        raise Exception("PDF processing failed")
+                                        
+                                    # Then update Excel with force and new path
+                                    success, _ = excel_manager.update_pdf_link(
+                                        config['excel_file'],
+                                        config['excel_sheet'],
+                                        row_idx,
+                                        processed_path,
+                                        config['filter2_column'],
+                                        force=True
+                                    )
+                                    if not success:
+                                        raise Exception("Failed to update Excel after confirmation")
+                            elif not success:
+                                if retry < max_retries - 1:
+                                    print(f"[DEBUG] Retry {retry + 1} updating Excel")
+                                    import time
+                                    time.sleep(retry_delay)
+                                    continue
+                                else:
+                                    raise Exception(f"Failed to update Excel after {max_retries} retries")
+                            else:
+                                # No existing hyperlink, proceed with normal processing
+                                # Move file to processed location
+                                if not self.pdf_manager.process_pdf(
+                                    task_to_process.pdf_path,
+                                    template_data,
+                                    config['processed_folder'],
+                                    config['output_template']
+                                ):
+                                    raise Exception("PDF processing failed")
+                                    
+                                # Update Excel with new path
+                                success, _ = excel_manager.update_pdf_link(
+                                    config['excel_file'],
+                                    config['excel_sheet'],
+                                    row_idx,
+                                    processed_path,
+                                    config['filter2_column'],
+                                    force=False
+                                )
+                                if not success:
+                                    raise Exception("Failed to update Excel with new path")
                             break
                         except Exception as e:
                             if retry < max_retries - 1:

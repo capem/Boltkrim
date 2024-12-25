@@ -113,8 +113,22 @@ class ExcelManager:
             raise Exception(f"Error loading Excel data: {str(e)}")
     
     @retry_with_backoff
-    def update_pdf_link(self, excel_file: str, sheet_name: str, row_idx: int, pdf_path: str, filter2_col: str) -> bool:
-        """Update Excel with PDF link. Returns True if update was successful, False if file was locked."""
+    def update_pdf_link(self, excel_file: str, sheet_name: str, row_idx: int, pdf_path: str, filter2_col: str, force: bool = False) -> Tuple[bool, bool]:
+        """Update Excel with PDF link. 
+        
+        Args:
+            excel_file: Path to the Excel file
+            sheet_name: Name of the sheet to update
+            row_idx: Row index to update (0-based)
+            pdf_path: Path to the PDF file
+            filter2_col: Column name for the hyperlink
+            force: Whether to force update even if hyperlink exists
+            
+        Returns:
+            Tuple[bool, bool]: (success, had_existing_link)
+            - success: True if update was successful, False if file was locked
+            - had_existing_link: True if there was an existing hyperlink
+        """
         if not path.exists(excel_file):
             raise FileNotFoundError(f"Excel file not found: {excel_file}")
             
@@ -123,14 +137,10 @@ class ExcelManager:
             
         print(f"[DEBUG] Updating Excel link in {sheet_name}, row {row_idx + 2}, column {filter2_col}")
         
-        # Create backup of the Excel file
-        backup_file = excel_file + '.bak'
         wb = None
+        backup_created = False
         
         try:
-            print("[DEBUG] Creating backup file")
-            copy2(excel_file, backup_file)
-            
             # Initialize Excel application
             if self.excel_app is None:
                 print("[DEBUG] Initializing Excel application")
@@ -144,7 +154,7 @@ class ExcelManager:
                 wb = self.excel_app.Workbooks.Open(
                     excel_file,
                     UpdateLinks=False,
-                    ReadOnly=False
+                    ReadOnly=not force  # Only open in write mode if we're going to update
                 )
                 print("[DEBUG] Getting worksheet")
                 ws = wb.Worksheets(sheet_name)
@@ -164,56 +174,76 @@ class ExcelManager:
                 
                 print(f"[DEBUG] Target column found at position {target_col}")
                 
-                # Create relative path for Excel link
-                rel_path = path.relpath(
-                    pdf_path,
-                    path.dirname(excel_file)
-                )
-                print(f"[DEBUG] Created relative path: {rel_path}")
-                
-                # Get the cell and add hyperlink
+                # Get the cell and check for existing hyperlink
                 print(f"[DEBUG] Accessing cell at row {row_idx + 2}, column {target_col}")
                 cell = ws.Cells(row_idx + 2, target_col)
                 original_value = cell.Value
                 print(f"[DEBUG] Original cell value: {original_value}")
                 
-                # Remove existing hyperlink if any
+                # Check for existing hyperlink
+                has_existing_link = False
                 try:
-                    if cell.Hyperlinks.Count > 0:
-                        print("[DEBUG] Removing existing hyperlink")
-                        cell.Hyperlinks.Delete()
+                    has_existing_link = cell.Hyperlinks.Count > 0
+                    if has_existing_link and not force:
+                        # Close workbook without saving and return
+                        wb.Close(SaveChanges=False)
+                        wb = None
+                        return True, True  # File accessible but has existing link
                 except Exception as e:
-                    print(f"[DEBUG] Error removing hyperlink: {str(e)}")
+                    print(f"[DEBUG] Error checking hyperlink: {str(e)}")
                 
-                # Add new hyperlink while preserving the cell value
-                print("[DEBUG] Adding new hyperlink")
-                ws.Hyperlinks.Add(
-                    Anchor=cell,
-                    Address=rel_path,
-                    TextToDisplay=original_value or path.basename(pdf_path)
-                )
-                
-                # Save and close
-                print("[DEBUG] Saving workbook")
-                wb.Save()
-                print("[DEBUG] Closing workbook")
-                wb.Close(SaveChanges=True)
-                wb = None
-                
-                # Delete backup if everything succeeded
-                if path.exists(backup_file):
-                    print("[DEBUG] Removing backup file")
-                    remove(backup_file)
+                if force or not has_existing_link:
+                    # Create backup only if we're going to modify the file
+                    backup_file = excel_file + '.bak'
+                    print("[DEBUG] Creating backup file")
+                    copy2(excel_file, backup_file)
+                    backup_created = True
                     
-                print("[DEBUG] Excel update completed successfully")
-                return True
+                    # Create relative path for Excel link
+                    rel_path = path.relpath(
+                        pdf_path,
+                        path.dirname(excel_file)
+                    )
+                    print(f"[DEBUG] Created relative path: {rel_path}")
+                    
+                    # Remove existing hyperlink if any
+                    try:
+                        if has_existing_link:
+                            print("[DEBUG] Removing existing hyperlink")
+                            cell.Hyperlinks.Delete()
+                    except Exception as e:
+                        print(f"[DEBUG] Error removing hyperlink: {str(e)}")
+                    
+                    # Add new hyperlink while preserving the cell value
+                    print("[DEBUG] Adding new hyperlink")
+                    ws.Hyperlinks.Add(
+                        Anchor=cell,
+                        Address=rel_path,
+                        TextToDisplay=original_value or path.basename(pdf_path)
+                    )
+                    
+                    # Save and close
+                    print("[DEBUG] Saving workbook")
+                    wb.Save()
+                    print("[DEBUG] Closing workbook")
+                    wb.Close(SaveChanges=True)
+                    wb = None
+                    
+                    # Delete backup if everything succeeded
+                    if backup_created and path.exists(backup_file):
+                        print("[DEBUG] Removing backup file")
+                        remove(backup_file)
+                        
+                    print("[DEBUG] Excel update completed successfully")
+                    
+                return True, has_existing_link
                     
             except pywintypes.com_error as e:
                 print(f"[DEBUG] COM error: {str(e)}")
                 # Handle specific COM errors
                 if e.hresult == -2147352567:  # File is locked for editing
                     print("[DEBUG] Excel file is locked for editing")
-                    return False  # Return False to indicate file was locked
+                    return False, False  # Return False to indicate file was locked
                 elif e.hresult == -2147417848:  # Excel automation server error
                     if self.excel_app:
                         print("[DEBUG] Excel automation error, quitting Excel")
@@ -231,7 +261,7 @@ class ExcelManager:
                 except:
                     pass
                     
-            if path.exists(backup_file):
+            if backup_created and path.exists(backup_file):
                 try:
                     print("[DEBUG] Restoring from backup")
                     copy2(backup_file, excel_file)
@@ -248,7 +278,7 @@ class ExcelManager:
                 except:
                     pass
                     
-            if path.exists(backup_file):
+            if backup_created and path.exists(backup_file):
                 try:
                     print("[DEBUG] Cleanup: Removing backup file")
                     remove(backup_file)
