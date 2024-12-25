@@ -1222,7 +1222,19 @@ class ProcessingTab(Frame):
                 self.pdf_viewer.display_pdf(next_pdf, 1.0)
                 self.rotation_label.config(text="0°")
                 self.zoom_label.config(text="100%")
-                self.filter1_frame.focus_set()
+                
+                # Clear all filters
+                self.filter1_frame.clear()
+                self.filter2_frame.clear()
+                self.filter3_frame.clear()
+                
+                # Reset available values for dependent filters
+                self.filter2_frame.set_values(self.all_values2)
+                self.filter3_frame.set_values(self.all_values3)
+                
+                # Focus the first fuzzy search entry
+                self.filter1_frame.entry.focus_set()
+                
                 self.status_var.set("Status: New file loaded")
             else:
                 self.current_pdf = None
@@ -1290,6 +1302,9 @@ class ProcessingTab(Frame):
             # Reset available values for dependent filters
             self.filter2_frame.set_values(self.all_values2)
             self.filter3_frame.set_values(self.all_values3)
+            
+            # Focus the first fuzzy search entry
+            self.filter1_frame.entry.focus_set()
                 
         except Exception as e:
             import traceback
