@@ -1,5 +1,5 @@
 from __future__ import annotations
-from tkinter import Canvas, END, Event as TkEvent, Widget, ttk, StringVar, NSEW, PhotoImage, Toplevel
+from tkinter import Canvas, END, Event as TkEvent, Widget, ttk, StringVar, NSEW, PhotoImage, Toplevel, Frame as TkFrame
 from tkinter.ttk import Frame, Scrollbar, Label, Button, Style, LabelFrame, Treeview, Notebook
 from PIL.ImageTk import PhotoImage as PILPhotoImage
 from os import path
@@ -825,72 +825,143 @@ class ProcessingTab(Frame):
         main_container.grid(row=0, column=0, sticky='nsew')
         
         # Configure column weights for the container
-        main_container.grid_columnconfigure(0, weight=1)  # Left panel (20%)
-        main_container.grid_columnconfigure(1, weight=8)  # Center panel (70%)
-        main_container.grid_columnconfigure(2, weight=1)  # Right panel (10%)
+        main_container.grid_columnconfigure(0, weight=0)  # Left panel (collapsible)
+        main_container.grid_columnconfigure(1, weight=0)  # Handle column
+        main_container.grid_columnconfigure(2, weight=8)  # Center panel
+        main_container.grid_columnconfigure(3, weight=1)  # Right panel
         main_container.grid_rowconfigure(0, weight=1)
         
-        # Left Panel (10% width)
-        left_panel = self._create_left_panel(main_container)
-        left_panel.grid(row=0, column=0, sticky='nsew', padx=(0, 10))
+        # Left Panel (collapsible)
+        self.left_panel = self._create_left_panel(main_container)
+        self.left_panel.grid(row=0, column=0, sticky='nsew')
         
-        # Center Panel (80% width)
-        center_panel = self._create_center_panel(main_container)
-        center_panel.grid(row=0, column=1, sticky='nsew', padx=10)
+        # Style for handle frame and button
+        style = Style()
+        style.configure("Handle.TFrame", background='#e0e0e0')
+        style.configure("Handle.TButton", 
+                       padding=0,
+                       relief='flat',
+                       borderwidth=0)
+        style.map("Handle.TButton",
+                 background=[('active', '#d0d0d0')])
         
-        # Right Panel (10% width)
-        right_panel = self._create_right_panel(main_container)
-        right_panel.grid(row=0, column=2, sticky='nsew', padx=(10, 0))
+        # Handle for collapsing/expanding
+        self.handle_frame = Frame(main_container, width=8, style="Handle.TFrame")
+        self.handle_frame.grid(row=0, column=1, sticky='nsew')
+        self.handle_frame.grid_propagate(False)
+        
+        self.handle_button = Button(
+            self.handle_frame,
+            text="⋮",  # Vertical dots as handle icon
+            style="Handle.TButton",
+            command=self._toggle_left_panel
+        )
+        self.handle_button.place(relx=0.5, rely=0.5, anchor='center', relheight=1.0)
+        
+        # Make handle draggable
+        self.handle_button.bind('<Enter>', lambda e: self.handle_button.configure(cursor='sb_h_double_arrow'))
+        self.handle_button.bind('<Leave>', lambda e: self.handle_button.configure(cursor=''))
+        self.handle_button.bind('<Button-1>', self._start_resize)
+        self.handle_button.bind('<B1-Motion>', self._do_resize)
+        self.handle_button.bind('<ButtonRelease-1>', self._end_resize)
+        
+        # Center Panel
+        self.center_panel = self._create_center_panel(main_container)
+        self.center_panel.grid(row=0, column=2, sticky='nsew', padx=(5, 5))
+        
+        # Right Panel
+        self.right_panel = self._create_right_panel(main_container)
+        self.right_panel.grid(row=0, column=3, sticky='nsew', padx=(5, 0))
+        
+        # Store initial width of left panel
+        self.left_panel_width = 250  # Default width
+        self.left_panel_visible = True
+        self.left_panel.configure(width=self.left_panel_width)
+        self.left_panel.grid_propagate(False)
+        
+        # Bind to Configure event to handle window resizing
+        self.bind('<Configure>', self._on_window_resize)
+
+    def _start_resize(self, event: TkEvent) -> None:
+        """Start resizing the left panel."""
+        self.start_x = event.x_root
+        self.start_width = self.left_panel.winfo_width()
+        self.resizing = True
+        style = Style()
+        style.configure("Handle.TFrame", background='#d0d0d0')
+
+    def _do_resize(self, event: TkEvent) -> None:
+        """Resize the left panel based on mouse drag."""
+        if self.left_panel_visible and hasattr(self, 'resizing') and self.resizing:
+            delta_x = event.x_root - self.start_x
+            new_width = max(200, min(400, self.start_width + delta_x))  # Limit width between 200 and 400
+            
+            # Only update if width actually changed
+            if new_width != self.left_panel_width:
+                self.left_panel_width = new_width
+                self.left_panel.configure(width=new_width)
+                
+                # Update layout
+                self.update_idletasks()
+
+    def _end_resize(self, event: TkEvent) -> None:
+        """End the resize operation."""
+        self.resizing = False
+        style = Style()
+        style.configure("Handle.TFrame", background='#e0e0e0')
+
+    def _toggle_left_panel(self) -> None:
+        """Toggle the visibility of the left panel."""
+        if self.left_panel_visible:
+            self.left_panel.grid_remove()
+            self.handle_button.configure(text="›")  # Right arrow when collapsed
+            self.left_panel_visible = False
+        else:
+            self.left_panel.grid()
+            self.handle_button.configure(text="⋮")  # Vertical dots when expanded
+            self.left_panel_visible = True
+            self.left_panel.configure(width=self.left_panel_width)
+        
+        # Update layout
+        self.update_idletasks()
+
+    def _on_window_resize(self, event: TkEvent) -> None:
+        """Handle window resize events."""
+        if event.widget == self:
+            # Ensure minimum window width
+            min_width = 800 if self.left_panel_visible else 600
+            if self.winfo_width() < min_width:
+                self.master.geometry(f"{min_width}x{self.winfo_height()}")
+            
+            # Update layout
+            self.update_idletasks()
 
     def _create_left_panel(self, parent: Widget) -> Frame:
         """Create the left panel containing file information and queue."""
         panel = Frame(parent)
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(1, weight=1)  # Make queue section expandable
         
         # File Information Section
         info_frame = LabelFrame(panel, text="File Information", padding=10)
-        info_frame.pack(fill='x', pady=(0, 10))
+        info_frame.grid(row=0, column=0, sticky='nsew', padx=5, pady=5)
         
-        # Create a fixed-width container for the file info
-        file_info_container = Frame(info_frame)  # Removed fixed width from container
+        # File info container
+        file_info_container = Frame(info_frame)
         file_info_container.pack(fill='x', pady=5)
         
         self.file_info = Label(file_info_container, text="No file loaded",
-                             style="Header.TLabel", width=25)  # Set fixed width on label instead
+                             style="Header.TLabel", wraplength=200)
         self.file_info.pack(fill='x', pady=5)
         
-        # Create tooltip for full filename
-        self.file_info_tooltip = None
-        def show_tooltip(event):
-            if self.file_info_tooltip or self.file_info['text'] == "No file loaded":
-                return
-            text = self.file_info['text']
-            if len(text) > 50:  # Only show tooltip for long filenames
-                x, y, _, _ = self.file_info.bbox("insert")
-                x += self.file_info.winfo_rootx() + 25
-                y += self.file_info.winfo_rooty() + 25
-                self.file_info_tooltip = Toplevel(self.file_info)
-                self.file_info_tooltip.wm_overrideredirect(True)
-                self.file_info_tooltip.wm_geometry(f"+{x}+{y}")
-                tooltip_label = Label(self.file_info_tooltip, text=text, 
-                                   justify='left', background="#ffffe0", 
-                                   relief='solid', borderwidth=1)
-                tooltip_label.pack()
-
-        def hide_tooltip(event):
-            if self.file_info_tooltip:
-                self.file_info_tooltip.destroy()
-                self.file_info_tooltip = None
-
-        self.file_info.bind('<Enter>', show_tooltip)
-        self.file_info.bind('<Leave>', hide_tooltip)
-        
+        # Status label
         self.status_var = StringVar(value="Status: Ready")
         status_label = Label(info_frame, textvariable=self.status_var)
         status_label.pack(fill='x')
         
         # Processing Queue Section
         queue_frame = LabelFrame(panel, text="Processing Queue", padding=10)
-        queue_frame.pack(fill='both', expand=True)
+        queue_frame.grid(row=1, column=0, sticky='nsew', padx=5, pady=5)
         
         self.queue_display = QueueDisplay(queue_frame)
         self.queue_display.pack(fill='both', expand=True)
