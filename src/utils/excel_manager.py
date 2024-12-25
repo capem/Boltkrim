@@ -303,6 +303,8 @@ class ExcelManager:
         value3 = str(value3).strip()
         
         print(f"[DEBUG] Looking for combination: {value1} | {value2} | {value3}")
+        print(f"[DEBUG] Value3 length: {len(value3)}")
+        print(f"[DEBUG] Value3 repr: {repr(value3)}")
         print(f"[DEBUG] In columns: {filter1_col} | {filter2_col} | {filter3_col}")
         print(f"[DEBUG] Column types: {df[filter1_col].dtype} | {df[filter2_col].dtype} | {df[filter3_col].dtype}")
         
@@ -323,6 +325,11 @@ class ExcelManager:
         mask2 = create_mask(filter2_col, value2)
         mask3 = create_mask(filter3_col, value3)
         
+        # Debug output for matching conditions
+        print(f"[DEBUG] Rows matching first condition: {mask1.sum()}")
+        print(f"[DEBUG] Rows matching second condition: {mask2.sum()}")
+        print(f"[DEBUG] Rows matching third condition: {mask3.sum()}")
+        
         mask = mask1 & mask2 & mask3
         
         if not mask.any():
@@ -332,6 +339,22 @@ class ExcelManager:
                 print(f"[DEBUG] Found rows matching first two conditions:")
                 print(f"[DEBUG] {matching_rows[[filter1_col, filter2_col, filter3_col]].to_string()}")
                 print(f"[DEBUG] Available values in filtered rows: {matching_rows[filter3_col].unique().tolist()}")
+                # Add detailed comparison for the third column
+                for idx, row in matching_rows.iterrows():
+                    actual_value = row[filter3_col]
+                    print(f"[DEBUG] Comparing FA values:")
+                    print(f"[DEBUG] Expected (len={len(value3)}): {repr(value3)}")
+                    print(f"[DEBUG] Actual (len={len(actual_value)}): {repr(actual_value)}")
+                    print(f"[DEBUG] Values equal: {actual_value == value3}")
+                    if actual_value != value3:
+                        # Compare character by character
+                        min_len = min(len(actual_value), len(value3))
+                        for i in range(min_len):
+                            if actual_value[i] != value3[i]:
+                                print(f"[DEBUG] First difference at position {i}:")
+                                print(f"[DEBUG] Expected char: {repr(value3[i])} (ord={ord(value3[i])})")
+                                print(f"[DEBUG] Actual char: {repr(actual_value[i])} (ord={ord(actual_value[i])})")
+                                break
             else:
                 print("[DEBUG] No rows match even the first two conditions")
                 print(f"[DEBUG] Values in first column ({filter1_col}): {df[filter1_col].unique().tolist()[:5]}...")
