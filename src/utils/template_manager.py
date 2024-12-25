@@ -13,12 +13,41 @@ class TemplateManager:
             'format': lambda dt, fmt: dt.strftime(fmt.replace('%', ''))
         }
         
+        def sanitize_path(s: str) -> str:
+            """Sanitize a string to be safe for use in file paths.
+            Handles various special characters while preserving basic readability."""
+            # Characters that are problematic in file paths
+            replacements = {
+                '/': '_',    # Forward slash
+                '\\': '_',   # Backslash
+                ':': '-',    # Colon
+                '*': '+',    # Asterisk
+                '?': '',     # Question mark
+                '"': "'",    # Double quote
+                '<': '(',    # Less than
+                '>': ')',    # Greater than
+                '|': '-',    # Pipe
+                '\0': '',    # Null character
+                '\n': ' ',   # Newline
+                '\r': ' ',   # Carriage return
+                '\t': ' ',   # Tab
+            }
+            result = s
+            for char, replacement in replacements.items():
+                result = result.replace(char, replacement)
+            # Remove any leading/trailing whitespace and dots
+            result = result.strip('. ')
+            # Collapse multiple spaces into one
+            result = ' '.join(result.split())
+            return result
+        
         self.string_operations: Dict[str, Callable] = {
             'upper': str.upper,
             'lower': str.lower,
             'title': str.title,
             'replace': lambda s, old, new: s.replace(old, new),
-            'slice': lambda s, start, end=None: s[int(start):None if end == '' else int(end)]
+            'slice': lambda s, start, end=None: s[int(start):None if end == '' else int(end)],
+            'sanitize': sanitize_path
         }
     
     def _parse_field(self, field: str) -> tuple[str, list[str]]:
@@ -137,6 +166,10 @@ class TemplateManager:
                 raise ValueError(f"Field not found in data: {field_name}")
             
             value = data[field_name]
+            
+            if field_name != 'processed_folder' and isinstance(value, str):
+                value = self.string_operations['sanitize'](value)
+            
             return self._apply_operations(value, operations)
         
         pattern = r'\{([^}]+)\}'
