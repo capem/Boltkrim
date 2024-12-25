@@ -620,6 +620,7 @@ class QueueDisplay(Frame):
 
         # Bind tooltip events
         self.table.bind('<Motion>', self._show_tooltip)
+        self.table.bind('<Double-1>', self._show_task_details)  # Bind double-click event
         self._tooltip_label = None
 
         # Create button frame at the bottom
@@ -749,6 +750,80 @@ class QueueDisplay(Frame):
         
         for item_id in current_items.values():
             self.table.delete(item_id)
+
+    def _show_task_details(self, event: TkEvent) -> None:
+        """Show task details in a dialog when double-clicking a row."""
+        item = self.table.identify('item', event.x, event.y)
+        if not item:
+            return
+
+        # Get the task values
+        values = self.table.item(item)['values']
+        if not values:
+            return
+
+        # Create a dialog window
+        dialog = Toplevel(self)
+        dialog.title("Task Details")
+        dialog.transient(self)  # Make dialog modal
+        dialog.grab_set()  # Make dialog modal
+
+        # Calculate position to center the dialog
+        x = self.winfo_rootx() + (self.winfo_width() // 2) - (400 // 2)
+        y = self.winfo_rooty() + (self.winfo_height() // 2) - (300 // 2)
+        dialog.geometry(f"400x300+{x}+{y}")
+
+        # Create a frame with padding
+        frame = TkFrame(dialog, padx=20, pady=20)
+        frame.pack(fill='both', expand=True)
+
+        # Add details with proper formatting and spacing
+        details = [
+            ("File:", path.basename(values[0])),
+            ("Full Path:", values[0]),
+            ("Selected Values:", values[1]),
+            ("Status:", values[2]),
+            ("Time:", values[3] if len(values) > 3 else "")
+        ]
+
+        # Add each detail with proper styling
+        for i, (label, value) in enumerate(details):
+            Label(frame, text=label, font=('Segoe UI', 10, 'bold')).grid(
+                row=i, column=0, sticky='w', pady=(0, 10))
+            Label(frame, text=value, wraplength=250).grid(
+                row=i, column=1, sticky='w', padx=(10, 0), pady=(0, 10))
+
+        # Add error message if status is failed
+        if values[2].lower() == 'failed':
+            Label(frame, text="Error Message:", font=('Segoe UI', 10, 'bold')).grid(
+                row=len(details), column=0, sticky='w', pady=(10, 0))
+            
+            # Get error message from the task
+            task_path = values[0]
+            error_msg = "No error message available"
+            
+            # Get the parent ProcessingTab instance
+            processing_tab = self.master.master
+            if hasattr(processing_tab, 'pdf_queue'):
+                with processing_tab.pdf_queue.lock:
+                    task = processing_tab.pdf_queue.tasks.get(task_path)
+                    if task and task.error_msg:
+                        error_msg = task.error_msg
+            
+            error_label = Label(frame, text=error_msg, wraplength=300,
+                              justify='left', foreground='red')
+            error_label.grid(row=len(details), column=1, sticky='w',
+                           padx=(10, 0), pady=(10, 0))
+
+        # Add close button at the bottom
+        Button(frame, text="Close", command=dialog.destroy).grid(
+            row=len(details) + 1, column=0, columnspan=2, pady=(20, 0))
+
+        # Make dialog resizable
+        dialog.resizable(True, True)
+        
+        # Focus the dialog
+        dialog.focus_set()
 
 class ProcessingTab(Frame):
     """A modernized tab for processing PDF files with Excel data integration."""
