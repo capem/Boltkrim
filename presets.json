@@ -7,7 +7,7 @@
         "filter1_column": "FOURNISSEURS",
         "filter2_column": "FACTURES",
         "filter3_column": "DATE FACTURE",
-        "output_template": "{processed_folder}/{DATE FACTURE|date.year}/MOIS {DATE FACTURE|date.month}/{filter_2|str.slice:0:2} {filter_1} {filter_2|str.slice:2:}.pdf"
+        "output_template": "{processed_folder}/{DATE FACTURE|date.year}/MOIS {DATE FACTURE|date.month}/{filter_2|str.slice:0:2} {filter_1}{filter_2|str.slice:2:}.pdf"
     },
     "OV LOCAL": {
         "source_folder": "//192.168.0.77/tarec/Archive/SCANNER/OV LOCAL",

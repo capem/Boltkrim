@@ -399,6 +399,25 @@ class ConfigTab(ttk.Frame):
                     if preset_config.get('excel_sheet'):
                         print(f"[DEBUG] Setting sheet to: {preset_config['excel_sheet']}")
                         self.sheet_combobox.set(preset_config['excel_sheet'])
+                        
+                        # Update column lists and wait for them to be populated
+                        self.update_column_lists()
+                        
+                        # Use after() to ensure column lists are updated before setting filter values
+                        def set_filter_values():
+                            if preset_config.get('filter1_column'):
+                                print(f"[DEBUG] Setting filter1 to: {preset_config['filter1_column']}")
+                                self.filter1_frame.set(preset_config['filter1_column'])
+                            if preset_config.get('filter2_column'):
+                                print(f"[DEBUG] Setting filter2 to: {preset_config['filter2_column']}")
+                                self.filter2_frame.set(preset_config['filter2_column'])
+                            if preset_config.get('filter3_column'):
+                                print(f"[DEBUG] Setting filter3 to: {preset_config['filter3_column']}")
+                                self.filter3_frame.set(preset_config['filter3_column'])
+                                
+                        # Wait a short moment for the column lists to be populated
+                        self.after(100, set_filter_values)
+                        
                 except Exception as e:
                     import traceback
                     print(f"[DEBUG] Error loading Excel data:")

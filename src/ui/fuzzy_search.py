@@ -188,6 +188,8 @@ class FuzzySearchFrame(Frame):
         if value:
             self.entry.configure(foreground='black')
             self.entry.insert(0, str(value))
+            # Update fuzzy search results after setting the value
+            self._update_listbox()
         else:
             self._set_placeholder()
 
@@ -350,3 +352,12 @@ class FuzzySearchFrame(Frame):
                 event.widget.tk_focusNext().focus()
             return "break"
         return None
+
+    def clear(self) -> None:
+        """Clear the entry text and listbox results, resetting to initial state."""
+        self.entry.delete(0, END)
+        self.listbox.delete(0, END)
+        self._set_placeholder()
+        # Add all values back to the listbox
+        for value in self.all_values:
+            self.listbox.insert(END, value)

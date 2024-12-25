@@ -91,6 +91,7 @@ class ProcessingQueue:
     def _process_queue(self) -> None:
         while not self.stop_event.is_set():
             task_to_process = None
+            excel_app = None
             
             with self.lock:
                 for task in self.tasks.values():
@@ -108,16 +109,29 @@ class ProcessingQueue:
                 pythoncom.CoInitialize()
                 config = self.config_manager.get_config()
                 excel_manager = type(self.excel_manager)()
-                excel_manager.load_excel_data(config['excel_file'], config['excel_sheet'])
                 
-                row_data, row_idx = excel_manager.find_matching_row(
-                    config['filter1_column'],
-                    config['filter2_column'],
-                    config['filter3_column'],
-                    task_to_process.value1,
-                    task_to_process.value2,
-                    task_to_process.value3
-                )
+                try:
+                    # Initialize Excel in hidden mode
+                    import win32com.client
+                    excel_app = win32com.client.Dispatch("Excel.Application")
+                    excel_app.Visible = False
+                    excel_app.DisplayAlerts = False
+                    
+                    excel_manager.load_excel_data(config['excel_file'], config['excel_sheet'])
+                except Exception as e:
+                    raise Exception(f"Failed to load Excel data: {str(e)}")
+                
+                try:
+                    row_data, row_idx = excel_manager.find_matching_row(
+                        config['filter1_column'],
+                        config['filter2_column'],
+                        config['filter3_column'],
+                        task_to_process.value1,
+                        task_to_process.value2,
+                        task_to_process.value3
+                    )
+                except Exception as e:
+                    raise Exception(f"Failed to find matching row: {str(e)}")
                 
                 if row_data is None:
                     raise Exception("Selected combination not found in Excel sheet")
@@ -149,42 +163,75 @@ class ProcessingQueue:
                     except Exception as e:
                         raise Exception(f"Error processing DATE FACTURE: {str(e)}")
                 
-                # Process the PDF with template-based naming
-                if self.pdf_manager.process_pdf(
-                    task_to_process.pdf_path,
-                    template_data,
-                    config['processed_folder'],
-                    config['output_template']
-                ):
+                try:
+                    # Process the PDF with template-based naming
+                    if not self.pdf_manager.process_pdf(
+                        task_to_process.pdf_path,
+                        template_data,
+                        config['processed_folder'],
+                        config['output_template']
+                    ):
+                        raise Exception("PDF processing failed")
+                        
                     # Get the actual output path for Excel update
                     output_path = self.pdf_manager.generate_output_path(
                         config['output_template'],
                         template_data
                     )
                     
-                    excel_manager.update_pdf_link(
-                        config['excel_file'],
-                        config['excel_sheet'],
-                        row_idx,
-                        output_path
-                    )
+                    # Update Excel with retries for shared file access
+                    max_retries = 3
+                    retry_delay = 1  # seconds
+                    for retry in range(max_retries):
+                        try:
+                            excel_manager.update_pdf_link(
+                                config['excel_file'],
+                                config['excel_sheet'],
+                                row_idx,
+                                output_path
+                            )
+                            break
+                        except Exception as e:
+                            if retry < max_retries - 1:
+                                print(f"[DEBUG] Retry {retry + 1} updating Excel: {str(e)}")
+                                import time
+                                time.sleep(retry_delay)
+                            else:
+                                raise Exception(f"Failed to update Excel after {max_retries} retries: {str(e)}")
                     
-                    with self.lock:
-                        task_to_process.status = 'completed'
-                        self._notify_status_change()
+                except Exception as e:
+                    raise Exception(f"Failed to process PDF or update Excel: {str(e)}")
+                
+                with self.lock:
+                    task_to_process.status = 'completed'
+                    self._notify_status_change()
                     
             except Exception as e:
                 with self.lock:
                     task_to_process.status = 'failed'
                     task_to_process.error_msg = str(e)
                     self._notify_status_change()
+                print(f"[DEBUG] Task failed: {str(e)}")
             finally:
+                # Clean up Excel application
+                if excel_app is not None:
+                    try:
+                        excel_app.Quit()
+                    except Exception as e:
+                        print(f"[DEBUG] Error quitting Excel: {str(e)}")
+                
                 try:
-                    if 'excel_manager' in locals():
-                        excel_manager.close()
-                except:
-                    pass
-                pythoncom.CoUninitialize()
+                    pythoncom.CoUninitialize()
+                except Exception as e:
+                    print(f"[DEBUG] Error uninitializing COM: {str(e)}")
+                
+                # If task is still in processing state, mark it as failed
+                with self.lock:
+                    if task_to_process and task_to_process.status == 'processing':
+                        task_to_process.status = 'failed'
+                        task_to_process.error_msg = "Task timed out or failed unexpectedly"
+                        self._notify_status_change()
+                        print("[DEBUG] Task marked as failed due to timeout or unexpected state")
 
 # UI Components
 class PDFViewer(Frame):
@@ -1152,10 +1199,12 @@ class ProcessingTab(Frame):
             self.status_var.set("Status: File queued for processing")
             self.load_next_pdf()
             
-            # Clear filters
-            self.filter1_frame.set('')
-            self.filter2_frame.set('')
-            self.filter3_frame.set('')
+            # Clear all filters
+            self.filter1_frame.clear()
+            self.filter2_frame.clear()
+            self.filter3_frame.clear()
+            
+            # Reset available values for dependent filters
             self.filter2_frame.set_values(self.all_values2)
             self.filter3_frame.set_values(self.all_values3)
                 
