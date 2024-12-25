@@ -1,4 +1,4 @@
-from tkinter import LEFT, END, StringVar
+from tkinter import LEFT, END, StringVar, Canvas, Scrollbar
 from tkinter import ttk, filedialog
 from .fuzzy_search import FuzzySearchFrame
 
@@ -11,24 +11,66 @@ class ConfigTab(ttk.Frame):
         
         # Configure grid weights
         self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
         
-        self.setup_ui()
+        # Create canvas and scrollbar
+        self.canvas = Canvas(self, bg='SystemButtonFace')
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = ttk.Frame(self.canvas)
+        
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw", width=self.winfo_width())
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        
+        # Bind to resize events
+        self.bind('<Configure>', self._on_frame_configure)
+        
+        # Grid layout for canvas and scrollbar
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.scrollbar.grid(row=0, column=1, sticky="ns")
+        
+        # Configure scrollable frame grid weights
+        self.scrollable_frame.grid_columnconfigure(0, weight=1)
+        
         self.setup_styles()
+        self.setup_ui()
         self._bind_shortcuts()
+        
+        # Bind mouse wheel to scrolling
+        self.bind_mouse_wheel(self)
         
     def _bind_shortcuts(self) -> None:
         """Bind keyboard shortcuts specific to config tab."""
         self.bind('<Control-s>', lambda e: self.save_config())
         
+    def bind_mouse_wheel(self, widget):
+        """Bind mouse wheel to all widgets for scrolling"""
+        widget.bind("<MouseWheel>", self._on_mouse_wheel)
+        widget.bind("<Button-4>", self._on_mouse_wheel)
+        widget.bind("<Button-5>", self._on_mouse_wheel)
+        for child in widget.winfo_children():
+            self.bind_mouse_wheel(child)
+            
+    def _on_mouse_wheel(self, event):
+        """Handle mouse wheel scrolling"""
+        if event.num == 5 or event.delta < 0:
+            self.canvas.yview_scroll(1, "units")
+        elif event.num == 4 or event.delta > 0:
+            self.canvas.yview_scroll(-1, "units")
+        return "break"
+        
     def setup_styles(self):
         """Setup custom styles for widgets"""
         style = ttk.Style()
         
-        # Main title style
+        # Main title style - reduced size
         style.configure("Title.TLabel", 
-                       font=('Helvetica', 14, 'bold'),
-                       padding=5)
+                       font=('Helvetica', 12, 'bold'),
+                       padding=3)
         
         # Section title style
         style.configure("Section.TLabel",
@@ -55,17 +97,17 @@ class ConfigTab(ttk.Frame):
     def setup_ui(self):
         """Create and setup the configuration UI."""
         # Configure grid weights for proper layout
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
+        self.scrollable_frame.grid_columnconfigure(0, weight=1)
+        self.scrollable_frame.grid_columnconfigure(1, weight=1)
         
-        # Main Title
-        title = ttk.Label(self, 
+        # Main Title - now in scrollable_frame
+        title = ttk.Label(self.scrollable_frame, 
                          text="Configuration Settings",
                          style="Title.TLabel")
-        title.grid(row=0, column=0, columnspan=2, pady=(10,5), sticky='n')
+        title.grid(row=0, column=0, columnspan=2, pady=(5,3), sticky='n')
         
         # Create a frame for the main content to manage layout better
-        main_content = ttk.Frame(self)
+        main_content = ttk.Frame(self.scrollable_frame)
         main_content.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
         main_content.grid_columnconfigure(0, weight=1)
         main_content.grid_columnconfigure(1, weight=1)
@@ -481,3 +523,8 @@ class ConfigTab(ttk.Frame):
         self.preset_combobox['values'] = presets
         if not self.preset_var.get() in presets:
             self.preset_var.set('')
+
+    def _on_frame_configure(self, event=None):
+        """Handle frame resize"""
+        # Update the canvas window width when the frame is resized
+        self.canvas.itemconfig("all", width=self.winfo_width() - self.scrollbar.winfo_width())
