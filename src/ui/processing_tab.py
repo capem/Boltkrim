@@ -1,6 +1,26 @@
 from __future__ import annotations
-from tkinter import Canvas, END, Event as TkEvent, Widget, ttk, StringVar, NSEW, PhotoImage, Toplevel, Frame as TkFrame
-from tkinter.ttk import Frame, Scrollbar, Label, Button, Style, LabelFrame, Treeview, Notebook
+from tkinter import (
+    Canvas,
+    END,
+    Event as TkEvent,
+    Widget,
+    ttk,
+    StringVar,
+    NSEW,
+    PhotoImage,
+    Toplevel,
+    Frame as TkFrame,
+)
+from tkinter.ttk import (
+    Frame,
+    Scrollbar,
+    Label,
+    Button,
+    Style,
+    LabelFrame,
+    Treeview,
+    Notebook,
+)
 from PIL.ImageTk import PhotoImage as PILPhotoImage
 from os import path
 from typing import Optional, Any, Dict, List, Callable
@@ -12,6 +32,8 @@ import pythoncom
 from datetime import datetime
 import pandas as pd
 from tkinter.messagebox import showerror, askyesno
+import win32com.client
+
 
 # Data Models
 @dataclass
@@ -20,8 +42,9 @@ class PDFTask:
     value1: str
     value2: str
     value3: str
-    status: str = 'pending'  # pending, processing, failed, completed
-    error_msg: str = ''
+    status: str = "pending"  # pending, processing, failed, completed
+    error_msg: str = ""
+
 
 # Queue Management
 class ProcessingQueue:
@@ -34,6 +57,7 @@ class ProcessingQueue:
         except (AttributeError, RuntimeError):
             # Fallback for PyInstaller if Event initialization fails
             import threading
+
             self.stop_event = threading.Event()
         self.config_manager = config_manager
         self.excel_manager = excel_manager
@@ -58,30 +82,26 @@ class ProcessingQueue:
             self.stop_event.clear()
             self.processing_thread = Thread(target=self._process_queue, daemon=True)
             self.processing_thread.start()
-    
+
     def get_task_status(self) -> Dict[str, List[PDFTask]]:
         with self.lock:
-            result = {
-                'pending': [],
-                'processing': [],
-                'failed': [],
-                'completed': []
-            }
+            result = {"pending": [], "processing": [], "failed": [], "completed": []}
             for task in self.tasks.values():
                 result[task.status].append(task)
             return result
-    
+
     def clear_completed(self) -> None:
         with self.lock:
-            self.tasks = {k: v for k, v in self.tasks.items() 
-                         if v.status not in ['completed']}
+            self.tasks = {
+                k: v for k, v in self.tasks.items() if v.status not in ["completed"]
+            }
 
     def retry_failed(self) -> None:
         with self.lock:
             for task in self.tasks.values():
-                if task.status == 'failed':
-                    task.status = 'pending'
-                    task.error_msg = ''
+                if task.status == "failed":
+                    task.status = "pending"
+                    task.error_msg = ""
         self._ensure_processing()
 
     def stop(self) -> None:
@@ -93,204 +113,171 @@ class ProcessingQueue:
         while not self.stop_event.is_set():
             task_to_process = None
             excel_app = None
-            
+
             with self.lock:
                 for task in self.tasks.values():
-                    if task.status == 'pending':
-                        task.status = 'processing'
+                    if task.status == "pending":
+                        task.status = "processing"
                         task_to_process = task
                         self._notify_status_change()
                         break
-            
+
             if task_to_process is None:
                 self.stop_event.wait(0.1)
                 continue
-                
+
             try:
                 pythoncom.CoInitialize()
                 config = self.config_manager.get_config()
                 excel_manager = type(self.excel_manager)()
-                
+
                 try:
                     # Initialize Excel in hidden mode
-                    import win32com.client
                     excel_app = win32com.client.Dispatch("Excel.Application")
                     excel_app.Visible = False
                     excel_app.DisplayAlerts = False
-                    
-                    excel_manager.load_excel_data(config['excel_file'], config['excel_sheet'])
+
+                    excel_manager.load_excel_data(
+                        config["excel_file"], config["excel_sheet"]
+                    )
                 except Exception as e:
                     raise Exception(f"Failed to load Excel data: {str(e)}")
-                
+
                 try:
                     row_data, row_idx = excel_manager.find_matching_row(
-                        config['filter1_column'],
-                        config['filter2_column'],
-                        config['filter3_column'],
+                        config["filter1_column"],
+                        config["filter2_column"],
+                        config["filter3_column"],
                         task_to_process.value1,
                         task_to_process.value2,
-                        task_to_process.value3
+                        task_to_process.value3,
                     )
                 except Exception as e:
                     raise Exception(f"Failed to find matching row: {str(e)}")
-                
+
                 if row_data is None:
                     raise Exception("Selected combination not found in Excel sheet")
-                
+
                 # Prepare template data with consistent field names
                 template_data = {
-                    'filter1': row_data[config['filter1_column']],
-                    'filter2': row_data[config['filter2_column']],
-                    'filter_1': row_data[config['filter1_column']],  # For backward compatibility
-                    'filter_2': row_data[config['filter2_column']],  # For backward compatibility
-                    config['filter1_column']: row_data[config['filter1_column']],  # Direct column access
-                    config['filter2_column']: row_data[config['filter2_column']],  # Direct column access
-                    config['filter3_column']: row_data[config['filter3_column']]   # Direct column access
+                    "filter1": row_data[config["filter1_column"]],
+                    "filter2": row_data[config["filter2_column"]],
+                    "filter_1": row_data[
+                        config["filter1_column"]
+                    ],  # For backward compatibility
+                    "filter_2": row_data[
+                        config["filter2_column"]
+                    ],  # For backward compatibility
+                    config["filter1_column"]: row_data[
+                        config["filter1_column"]
+                    ],  # Direct column access
+                    config["filter2_column"]: row_data[
+                        config["filter2_column"]
+                    ],  # Direct column access
+                    config["filter3_column"]: row_data[
+                        config["filter3_column"]
+                    ],  # Direct column access
                 }
-                
+
                 # Handle date fields generically
                 for col in row_data.index:
                     if isinstance(row_data[col], datetime):
                         template_data[col] = row_data[col]
-                    elif 'DATE' in col.upper() or 'DT' in col.upper():
+                    elif "DATE" in col.upper() or "DT" in col.upper():
                         # Try to parse potential date fields
                         try:
                             if pd.notnull(row_data[col]):
-                                for date_format in ['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%Y/%m/%d']:
+                                for date_format in [
+                                    "%Y-%m-%d",
+                                    "%d/%m/%Y",
+                                    "%d-%m-%Y",
+                                    "%Y/%m/%d",
+                                ]:
                                     try:
-                                        template_data[col] = datetime.strptime(str(row_data[col]), date_format)
+                                        template_data[col] = datetime.strptime(
+                                            str(row_data[col]), date_format
+                                        )
                                         break
                                     except ValueError:
                                         continue
                         except Exception as e:
-                            print(f"[DEBUG] Failed to parse date in column {col}: {str(e)}")
+                            print(
+                                f"[DEBUG] Failed to parse date in column {col}: {str(e)}"
+                            )
                             # Don't raise an error, just keep the original value
                             template_data[col] = row_data[col]
                     else:
                         # Copy non-date fields as is
                         template_data[col] = row_data[col]
-                
+
                 try:
                     # Add processed_folder to template data
-                    template_data['processed_folder'] = config['processed_folder']
-                    
-                    # Generate both paths - one for original location and one for processed location
-                    processed_path = self.pdf_manager.generate_output_path(
-                        config['output_template'],
-                        template_data
-                    )
-                    
-                    original_name = path.basename(processed_path)
-                    original_dir = path.dirname(task_to_process.pdf_path)
-                    original_path = path.join(original_dir, original_name)
-                    
-                    # First rename the file in its original location if needed
-                    if task_to_process.pdf_path != original_path:
-                        try:
-                            if path.exists(original_path):
-                                raise Exception("A file with this name already exists in the original location")
-                            import os
-                            os.rename(task_to_process.pdf_path, original_path)
-                            print(f"[DEBUG] Renamed file to: {original_path}")
-                        except Exception as e:
-                            raise Exception(f"Failed to rename file: {str(e)}")
-                    else:
-                        print(f"[DEBUG] File already has the correct name: {original_path}")
+                    template_data["processed_folder"] = config["processed_folder"]
 
-                    # Now check Excel hyperlink after file is in the correct location
+                    # Generate new filepath using template
+                    processed_path = self.pdf_manager.generate_output_path(
+                        config["output_template"], template_data
+                    )
+
+                    # Move file to processed location first
+                    if not self.pdf_manager.process_pdf(
+                        task_to_process.pdf_path,
+                        template_data,
+                        config["processed_folder"],
+                        config["output_template"],
+                    ):
+                        raise Exception("PDF processing failed")
+
+                    # Setup retry parameters for Excel operations
                     max_retries = 3
                     retry_delay = 1  # seconds
-                    should_move_to_processed = True
-                    
+
                     for retry in range(max_retries):
                         try:
-                            # Check if hyperlink exists using the current file path
+                            # Now update Excel with the new path
                             success, has_existing_link = excel_manager.update_pdf_link(
-                                config['excel_file'],
-                                config['excel_sheet'],
+                                config["excel_file"],
+                                config["excel_sheet"],
                                 row_idx,
-                                original_path,  # Use the path where the file is now
-                                config['filter2_column'],
-                                force=False
+                                processed_path,  # Use the processed_path directly
+                                config["filter2_column"],
+                                force=True,  # Always force since we've already moved the file
                             )
-                            
-                            if success and has_existing_link:
-                                # Ask user for confirmation
-                                if not askyesno("Warning", 
-                                            "A hyperlink already exists in this cell. Do you want to overwrite it?"):
-                                    # User chose not to overwrite, keep file in original location
-                                    should_move_to_processed = False
-                                    break  # Exit the retry loop since we're not updating Excel
-                                else:
-                                    # Move file to processed location first
-                                    if not self.pdf_manager.process_pdf(
-                                        original_path,  # Use renamed path as source
-                                        template_data,
-                                        config['processed_folder'],
-                                        config['output_template']
-                                    ):
-                                        raise Exception("PDF processing failed")
-                                        
-                                    # Then update Excel with force and new path
-                                    success, _ = excel_manager.update_pdf_link(
-                                        config['excel_file'],
-                                        config['excel_sheet'],
-                                        row_idx,
-                                        processed_path,
-                                        config['filter2_column'],
-                                        force=True
-                                    )
-                                    if not success:
-                                        raise Exception("Failed to update Excel after confirmation")
-                            elif not success:
+
+                            if not success:
                                 if retry < max_retries - 1:
                                     print(f"[DEBUG] Retry {retry + 1} updating Excel")
                                     import time
+
                                     time.sleep(retry_delay)
                                     continue
                                 else:
-                                    raise Exception(f"Failed to update Excel after {max_retries} retries")
-                            else:
-                                # No existing hyperlink, proceed with normal processing
-                                # Move file to processed location
-                                if not self.pdf_manager.process_pdf(
-                                    original_path,  # Use renamed path as source
-                                    template_data,
-                                    config['processed_folder'],
-                                    config['output_template']
-                                ):
-                                    raise Exception("PDF processing failed")
-                                    
-                                # Update Excel with new path
-                                success, _ = excel_manager.update_pdf_link(
-                                    config['excel_file'],
-                                    config['excel_sheet'],
-                                    row_idx,
-                                    processed_path,
-                                    config['filter2_column'],
-                                    force=False
-                                )
-                                if not success:
-                                    raise Exception("Failed to update Excel with new path")
+                                    raise Exception(
+                                        f"Failed to update Excel after {max_retries} retries"
+                                    )
                             break
                         except Exception as e:
                             if retry < max_retries - 1:
-                                print(f"[DEBUG] Retry {retry + 1} updating Excel: {str(e)}")
+                                print(
+                                    f"[DEBUG] Retry {retry + 1} updating Excel: {str(e)}"
+                                )
                                 import time
+
                                 time.sleep(retry_delay)
                             else:
-                                raise Exception(f"Failed to update Excel after {max_retries} retries: {str(e)}")
-                    
+                                raise Exception(
+                                    f"Failed to update Excel after {max_retries} retries: {str(e)}"
+                                )
                 except Exception as e:
                     raise Exception(f"Failed to process PDF or update Excel: {str(e)}")
-                
+
                 with self.lock:
-                    task_to_process.status = 'completed'
+                    task_to_process.status = "completed"
                     self._notify_status_change()
-                    
+
             except Exception as e:
                 with self.lock:
-                    task_to_process.status = 'failed'
+                    task_to_process.status = "failed"
                     task_to_process.error_msg = str(e)
                     self._notify_status_change()
                 print(f"[DEBUG] Task failed: {str(e)}")
@@ -301,84 +288,84 @@ class ProcessingQueue:
                         excel_app.Quit()
                     except Exception as e:
                         print(f"[DEBUG] Error quitting Excel: {str(e)}")
-                
+
                 try:
                     pythoncom.CoUninitialize()
                 except Exception as e:
                     print(f"[DEBUG] Error uninitializing COM: {str(e)}")
-                
+
                 # If task is still in processing state, mark it as failed
                 with self.lock:
-                    if task_to_process and task_to_process.status == 'processing':
-                        task_to_process.status = 'failed'
-                        task_to_process.error_msg = "Task timed out or failed unexpectedly"
+                    if task_to_process and task_to_process.status == "processing":
+                        task_to_process.status = "failed"
+                        task_to_process.error_msg = (
+                            "Task timed out or failed unexpectedly"
+                        )
                         self._notify_status_change()
-                        print("[DEBUG] Task marked as failed due to timeout or unexpected state")
+                        print(
+                            "[DEBUG] Task marked as failed due to timeout or unexpected state"
+                        )
+
 
 # UI Components
 class PDFViewer(Frame):
     """A modernized PDF viewer widget with zoom and scroll capabilities."""
-    
+
     def __init__(self, master: Widget, pdf_manager: Any):
         super().__init__(master)
         self.pdf_manager = pdf_manager
         self.current_image: Optional[PILPhotoImage] = None
         self.current_pdf: Optional[str] = None
         self.zoom_level = 1.0
-        
+
         # Configure grid weights
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        
+
         self.setup_ui()
 
     def setup_ui(self) -> None:
         """Setup the PDF viewer interface."""
         # Create a container frame with fixed padding for scrollbars
         self.container_frame = Frame(self)
-        self.container_frame.grid(row=0, column=0, sticky='nsew')
+        self.container_frame.grid(row=0, column=0, sticky="nsew")
         self.container_frame.grid_columnconfigure(0, weight=1)
         self.container_frame.grid_rowconfigure(0, weight=1)
-        
+
         # Create canvas with modern styling
         self.canvas = Canvas(
             self.container_frame,
-            bg='#f8f9fa',  # Light gray background
+            bg="#f8f9fa",  # Light gray background
             highlightthickness=0,  # Remove border
             width=20,  # Minimum width to prevent collapse
-            height=20   # Minimum height to prevent collapse
+            height=20,  # Minimum height to prevent collapse
         )
-        self.canvas.grid(row=0, column=0, sticky='nsew')
-        
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+
         # Modern scrollbars - always create them to reserve space
         self.h_scrollbar = Scrollbar(
-            self.container_frame,
-            orient='horizontal',
-            command=self.canvas.xview
+            self.container_frame, orient="horizontal", command=self.canvas.xview
         )
-        self.h_scrollbar.grid(row=1, column=0, sticky='ew')
-        
+        self.h_scrollbar.grid(row=1, column=0, sticky="ew")
+
         self.v_scrollbar = Scrollbar(
-            self.container_frame,
-            orient='vertical',
-            command=self.canvas.yview
+            self.container_frame, orient="vertical", command=self.canvas.yview
         )
-        self.v_scrollbar.grid(row=0, column=1, sticky='ns')
-        
+        self.v_scrollbar.grid(row=0, column=1, sticky="ns")
+
         # Configure canvas scrolling
         self.canvas.configure(
-            xscrollcommand=self._on_x_scroll,
-            yscrollcommand=self._on_y_scroll
+            xscrollcommand=self._on_x_scroll, yscrollcommand=self._on_y_scroll
         )
-        
+
         # Initially hide scrollbars but keep their space reserved
         self.h_scrollbar.grid_remove()
         self.v_scrollbar.grid_remove()
-        
+
         # Create a frame for the loading message that won't affect layout
         self.loading_frame = Frame(self.container_frame)
-        self.loading_frame.place(relx=0.5, rely=0.5, anchor='center')
-        
+        self.loading_frame.place(relx=0.5, rely=0.5, anchor="center")
+
         self._bind_events()
 
     def _on_x_scroll(self, *args) -> None:
@@ -399,7 +386,9 @@ class PDFViewer(Frame):
             return
 
         # Get the scroll region and canvas size
-        x1, y1, x2, y2 = self.canvas.bbox("all") if self.canvas.find_all() else (0, 0, 0, 0)
+        x1, y1, x2, y2 = (
+            self.canvas.bbox("all") if self.canvas.find_all() else (0, 0, 0, 0)
+        )
         canvas_width = self.canvas.winfo_width()
         canvas_height = self.canvas.winfo_height()
 
@@ -417,6 +406,7 @@ class PDFViewer(Frame):
 
     def _bind_events(self) -> None:
         """Bind mouse and keyboard events."""
+
         def _on_mousewheel(event: Event) -> None:
             if event.state & 4:  # Ctrl key
                 if event.delta > 0:
@@ -428,21 +418,21 @@ class PDFViewer(Frame):
 
         def _bind_mousewheel(event: Event) -> None:
             self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
-            
+
         def _unbind_mousewheel(event: Event) -> None:
             self.canvas.unbind_all("<MouseWheel>")
 
         # Bind mousewheel only when mouse is over the PDF viewer area
-        self.canvas.bind('<Enter>', _bind_mousewheel)
-        self.canvas.bind('<Leave>', _unbind_mousewheel)
-        self.v_scrollbar.bind('<Enter>', _bind_mousewheel)
-        self.v_scrollbar.bind('<Leave>', _unbind_mousewheel)
-        
+        self.canvas.bind("<Enter>", _bind_mousewheel)
+        self.canvas.bind("<Leave>", _unbind_mousewheel)
+        self.v_scrollbar.bind("<Enter>", _bind_mousewheel)
+        self.v_scrollbar.bind("<Leave>", _unbind_mousewheel)
+
         # Pan functionality
         self.canvas.bind("<Button-1>", self._start_drag)
         self.canvas.bind("<B1-Motion>", self._do_drag)
         self.canvas.bind("<ButtonRelease-1>", self._stop_drag)
-        
+
         # Window resize handling
         self.canvas.bind("<Configure>", self._on_resize)
         self.canvas.bind("<Key>", self._on_key)
@@ -498,55 +488,57 @@ class PDFViewer(Frame):
         canvas_height = self.canvas.winfo_height()
         image_width = self.current_image.width()
         image_height = self.current_image.height()
-        
+
         # Calculate centering offsets
         x = max(0, (canvas_width - image_width) // 2)
         y = max(0, (canvas_height - image_height) // 2)
-        
+
         # Set scroll region to image bounds plus padding
         scroll_width = max(canvas_width, image_width + x * 2)
         scroll_height = max(canvas_height, image_height + y * 2)
-        
+
         self.canvas.configure(scrollregion=(0, 0, scroll_width, scroll_height))
-        
+
         # Clear and redraw image
         self.canvas.delete("all")
         image_x = (scroll_width - image_width) // 2
         image_y = (scroll_height - image_height) // 2
-        self.canvas.create_image(image_x, image_y, anchor='nw', image=self.current_image)
-        
+        self.canvas.create_image(
+            image_x, image_y, anchor="nw", image=self.current_image
+        )
+
         # Update scrollbar visibility
         self._update_scrollbar_visibility()
 
-    def display_pdf(self, pdf_path: str, zoom: float = 1.0, show_loading: bool = True) -> None:
+    def display_pdf(
+        self, pdf_path: str, zoom: float = 1.0, show_loading: bool = True
+    ) -> None:
         """Display a PDF file with the specified zoom level."""
         try:
             self.current_pdf = pdf_path
             self.zoom_level = zoom
-            
+
             # Show loading message using place geometry manager
             loading_label = None
             if show_loading:
                 loading_label = Label(
-                    self.loading_frame,
-                    text="Loading PDF...",
-                    font=('Segoe UI', 10)
+                    self.loading_frame, text="Loading PDF...", font=("Segoe UI", 10)
                 )
                 loading_label.pack(pady=20)
                 self.loading_frame.lift()  # Bring loading message to front
                 self.update()
-            
+
             # Render PDF
             image = self.pdf_manager.render_pdf_page(pdf_path, zoom=zoom)
-            
+
             if loading_label:
                 loading_label.destroy()
                 self.loading_frame.place_forget()  # Hide the loading frame
-            
+
             self.current_image = PILPhotoImage(image)
             self._center_image()
             self.canvas.focus_set()
-            
+
         except Exception as e:
             if loading_label:
                 loading_label.destroy()
@@ -565,6 +557,7 @@ class PDFViewer(Frame):
             self.zoom_level = max(0.2, self.zoom_level - step)
             self.display_pdf(self.current_pdf, self.zoom_level, show_loading=False)
 
+
 class QueueDisplay(Frame):
     def __init__(self, master: Widget):
         super().__init__(master)
@@ -578,76 +571,82 @@ class QueueDisplay(Frame):
 
         # Create a frame for the table and scrollbar
         table_frame = Frame(self)
-        table_frame.grid(row=0, column=0, sticky='nsew', padx=5, pady=5)
+        table_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         table_frame.grid_columnconfigure(0, weight=1)
         table_frame.grid_rowconfigure(0, weight=1)
 
         # Setup table with more columns
-        columns = ('filename', 'values', 'status', 'time')
-        self.table = Treeview(table_frame, columns=columns, show='headings', height=5)
-        
+        columns = ("filename", "values", "status", "time")
+        self.table = Treeview(table_frame, columns=columns, show="headings", height=5)
+
         # Configure headings with sort functionality
-        self.table.heading('filename', text='File')
-        self.table.heading('values', text='Selected Values')
-        self.table.heading('status', text='Status')
-        self.table.heading('time', text='Time')
-        
+        self.table.heading("filename", text="File")
+        self.table.heading("values", text="Selected Values")
+        self.table.heading("status", text="Status")
+        self.table.heading("time", text="Time")
+
         # Configure column widths and weights
-        self.table.column('filename', width=120, minwidth=80)
-        self.table.column('values', width=150, minwidth=120)
-        self.table.column('status', width=70, minwidth=70)
-        self.table.column('time', width=60, minwidth=60)
+        self.table.column("filename", width=120, minwidth=80)
+        self.table.column("values", width=150, minwidth=120)
+        self.table.column("status", width=70, minwidth=70)
+        self.table.column("time", width=60, minwidth=60)
 
         # Add vertical scrollbar
-        v_scrollbar = Scrollbar(table_frame, orient="vertical", command=self.table.yview)
+        v_scrollbar = Scrollbar(
+            table_frame, orient="vertical", command=self.table.yview
+        )
         self.table.configure(yscrollcommand=v_scrollbar.set)
 
         # Add horizontal scrollbar
-        h_scrollbar = Scrollbar(table_frame, orient="horizontal", command=self.table.xview)
+        h_scrollbar = Scrollbar(
+            table_frame, orient="horizontal", command=self.table.xview
+        )
         self.table.configure(xscrollcommand=h_scrollbar.set)
 
         # Grid table and scrollbars
-        self.table.grid(row=0, column=0, sticky='nsew')
-        v_scrollbar.grid(row=0, column=1, sticky='ns')
-        h_scrollbar.grid(row=1, column=0, sticky='ew')
+        self.table.grid(row=0, column=0, sticky="nsew")
+        v_scrollbar.grid(row=0, column=1, sticky="ns")
+        h_scrollbar.grid(row=1, column=0, sticky="ew")
 
         # Configure status colors and tooltips
-        self.table.tag_configure('pending', foreground='black')
-        self.table.tag_configure('processing', foreground='blue')
-        self.table.tag_configure('completed', foreground='green')
-        self.table.tag_configure('failed', foreground='red')
+        self.table.tag_configure("pending", foreground="black")
+        self.table.tag_configure("processing", foreground="blue")
+        self.table.tag_configure("completed", foreground="green")
+        self.table.tag_configure("failed", foreground="red")
 
         # Bind tooltip events
-        self.table.bind('<Motion>', self._show_tooltip)
-        self.table.bind('<Double-1>', self._show_task_details)  # Bind double-click event
+        self.table.bind("<Motion>", self._show_tooltip)
+        self.table.bind(
+            "<Double-1>", self._show_task_details
+        )  # Bind double-click event
         self._tooltip_label = None
 
         # Create button frame at the bottom
         btn_frame = Frame(self)
-        btn_frame.grid(row=1, column=0, sticky='ew', padx=5, pady=(0, 5))
+        btn_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 5))
         btn_frame.grid_columnconfigure(0, weight=1)
         btn_frame.grid_columnconfigure(1, weight=1)
 
         # Style for modern looking buttons
         style = Style()
         style.configure("Action.TButton", padding=5)
-        
+
         # Add buttons with equal width and spacing
         self.clear_btn = Button(
             btn_frame,
             text="Clear Completed",
             style="Action.TButton",
-            width=20  # Reduced from 15
+            width=20,  # Reduced from 15
         )
-        self.clear_btn.grid(row=0, column=0, padx=(0, 2), sticky='e')
-        
+        self.clear_btn.grid(row=0, column=0, padx=(0, 2), sticky="e")
+
         self.retry_btn = Button(
             btn_frame,
             text="Retry Failed",
             style="Action.TButton",
-            width=20  # Reduced from 15
+            width=20,  # Reduced from 15
         )
-        self.retry_btn.grid(row=0, column=1, padx=(2, 0), sticky='w')
+        self.retry_btn.grid(row=0, column=1, padx=(2, 0), sticky="w")
 
     def _show_tooltip(self, event) -> None:
         """Show tooltip with full path when hovering over truncated filename."""
@@ -659,18 +658,18 @@ class QueueDisplay(Frame):
 
         # Get the column under cursor
         column = self.table.identify_column(event.x)
-        if column != '#1':  # Only show tooltip for filename column
+        if column != "#1":  # Only show tooltip for filename column
             self._hide_tooltip()
             return
 
         # Get full path from the item
-        values = self.table.item(item)['values']
+        values = self.table.item(item)["values"]
         if not values:
             self._hide_tooltip()
             return
 
         full_path = values[0]
-        displayed_text = self.table.item(item, 'text')
+        displayed_text = self.table.item(item, "text")
 
         # Only show tooltip if text is truncated
         cell_box = self.table.bbox(item, column)
@@ -682,9 +681,9 @@ class QueueDisplay(Frame):
             self._tooltip_label = Label(
                 self,
                 text=full_path,
-                background='#ffffe0',
-                relief='solid',
-                borderwidth=1
+                background="#ffffe0",
+                relief="solid",
+                borderwidth=1,
             )
 
         # Position tooltip below the cell
@@ -702,62 +701,73 @@ class QueueDisplay(Frame):
         filename = path.basename(path_str)
         if len(filename) <= max_length:
             return filename
-        
+
         # If filename is too long, truncate the middle
         half = (max_length - 3) // 2
         return f"{filename[:half]}...{filename[-half:]}"
 
     def update_display(self, tasks: Dict[str, PDFTask]) -> None:
         selection = self.table.selection()
-        selected_paths = [self.table.item(item)['values'][0] for item in selection]
-        
+        selected_paths = [self.table.item(item)["values"][0] for item in selection]
+
         current_items = {}
         for item in self.table.get_children():
-            path_value = self.table.item(item)['values'][0]
+            path_value = self.table.item(item)["values"][0]
             current_items[path_value] = item
-        
+
         for task_path, task in tasks.items():
             # Format the values string
             values_str = f"{task.value1} | {task.value2} | {task.value3}"
-            
+
             # Get current time for processing tasks
-            time_str = datetime.now().strftime("%H:%M:%S") if task.status == 'processing' else ""
-            
+            time_str = (
+                datetime.now().strftime("%H:%M:%S")
+                if task.status == "processing"
+                else ""
+            )
+
             # Create display values
             display_values = (
                 task_path,  # Store full path for tooltip
                 values_str,
                 task.status.capitalize(),
-                time_str
+                time_str,
             )
-            
+
             if task_path in current_items:
                 # Update all columns with new values
-                for idx, col in enumerate(['filename', 'values', 'status', 'time']):
-                    self.table.set(current_items[task_path], column=col, value=display_values[idx])
-                self.table.item(current_items[task_path],
-                              text=self._get_truncated_path(task_path),
-                              tags=(task.status,))
+                for idx, col in enumerate(["filename", "values", "status", "time"]):
+                    self.table.set(
+                        current_items[task_path], column=col, value=display_values[idx]
+                    )
+                self.table.item(
+                    current_items[task_path],
+                    text=self._get_truncated_path(task_path),
+                    tags=(task.status,),
+                )
                 current_items.pop(task_path)
             else:
-                item = self.table.insert('', 'end',
-                                       text=self._get_truncated_path(task_path),
-                                       values=display_values,
-                                       tags=(task.status,))
+                item = self.table.insert(
+                    "",
+                    "end",
+                    text=self._get_truncated_path(task_path),
+                    values=display_values,
+                    tags=(task.status,),
+                )
                 if task_path in selected_paths:
                     self.table.selection_add(item)
-        
+
         for item_id in current_items.values():
             self.table.delete(item_id)
 
     def _show_task_details(self, event: TkEvent) -> None:
         """Show task details in a dialog when double-clicking a row."""
-        item = self.table.identify('item', event.x, event.y)
+        item = self.table.identify("item", event.x, event.y)
         if not item:
             return
 
         # Get the task values
-        values = self.table.item(item)['values']
+        values = self.table.item(item)["values"]
         if not values:
             return
 
@@ -774,7 +784,7 @@ class QueueDisplay(Frame):
 
         # Create a frame with padding
         frame = TkFrame(dialog, padx=20, pady=20)
-        frame.pack(fill='both', expand=True)
+        frame.pack(fill="both", expand=True)
 
         # Add details with proper formatting and spacing
         details = [
@@ -782,179 +792,211 @@ class QueueDisplay(Frame):
             ("Full Path:", values[0]),
             ("Selected Values:", values[1]),
             ("Status:", values[2]),
-            ("Time:", values[3] if len(values) > 3 else "")
+            ("Time:", values[3] if len(values) > 3 else ""),
         ]
 
         # Add each detail with proper styling
         for i, (label, value) in enumerate(details):
-            Label(frame, text=label, font=('Segoe UI', 10, 'bold')).grid(
-                row=i, column=0, sticky='w', pady=(0, 10))
+            Label(frame, text=label, font=("Segoe UI", 10, "bold")).grid(
+                row=i, column=0, sticky="w", pady=(0, 10)
+            )
             Label(frame, text=value, wraplength=250).grid(
-                row=i, column=1, sticky='w', padx=(10, 0), pady=(0, 10))
+                row=i, column=1, sticky="w", padx=(10, 0), pady=(0, 10)
+            )
 
         # Add error message if status is failed
-        if values[2].lower() == 'failed':
-            Label(frame, text="Error Message:", font=('Segoe UI', 10, 'bold')).grid(
-                row=len(details), column=0, sticky='w', pady=(10, 0))
-            
+        if values[2].lower() == "failed":
+            Label(frame, text="Error Message:", font=("Segoe UI", 10, "bold")).grid(
+                row=len(details), column=0, sticky="w", pady=(10, 0)
+            )
+
             # Get error message from the task
             task_path = values[0]
             error_msg = "No error message available"
-            
+
             # Get the parent ProcessingTab instance
             processing_tab = self.master.master
-            if hasattr(processing_tab, 'pdf_queue'):
+            if hasattr(processing_tab, "pdf_queue"):
                 with processing_tab.pdf_queue.lock:
                     task = processing_tab.pdf_queue.tasks.get(task_path)
                     if task and task.error_msg:
                         error_msg = task.error_msg
-            
-            error_label = Label(frame, text=error_msg, wraplength=300,
-                              justify='left', foreground='red')
-            error_label.grid(row=len(details), column=1, sticky='w',
-                           padx=(10, 0), pady=(10, 0))
+
+            error_label = Label(
+                frame, text=error_msg, wraplength=300, justify="left", foreground="red"
+            )
+            error_label.grid(
+                row=len(details), column=1, sticky="w", padx=(10, 0), pady=(10, 0)
+            )
 
         # Add close button at the bottom
         Button(frame, text="Close", command=dialog.destroy).grid(
-            row=len(details) + 1, column=0, columnspan=2, pady=(20, 0))
+            row=len(details) + 1, column=0, columnspan=2, pady=(20, 0)
+        )
 
         # Make dialog resizable
         dialog.resizable(True, True)
-        
+
         # Focus the dialog
         dialog.focus_set()
 
+
 class ProcessingTab(Frame):
     """A modernized tab for processing PDF files with Excel data integration."""
-    
-    def __init__(self, master: Widget, config_manager: Any,
-                 excel_manager: Any, pdf_manager: Any) -> None:
+
+    def __init__(
+        self,
+        master: Widget,
+        config_manager: Any,
+        excel_manager: Any,
+        pdf_manager: Any,
+        error_handler: Callable[[Exception, str], None],
+        status_handler: Callable[[str], None],
+    ) -> None:
         super().__init__(master)
         self.master = master
         self.config_manager = config_manager
         self.excel_manager = excel_manager
         self.pdf_manager = pdf_manager
-        
+        self._handle_error = error_handler
+        self._update_status = status_handler
+
         self.pdf_queue = ProcessingQueue(config_manager, excel_manager, pdf_manager)
         self.current_pdf: Optional[str] = None
-        self.all_values2: List[str] = []
-        
+
         # Configure styles
         self._setup_styles()
-        
+
         # Setup main layout
-        self.setup_ui()
+        self._setup_ui()
         self.update_queue_display()
         self.after(100, self._periodic_update)
-        
+
         # Register for config changes
-        if hasattr(config_manager, 'add_change_callback'):
-            config_manager.add_change_callback(self.handle_config_change)
+        self.config_manager.add_change_callback(self.on_config_change)
+
+    def load_initial_data(self) -> None:
+        """Load initial data asynchronously after window is shown."""
+        try:
+            config = self.config_manager.get_config()
+            if config["excel_file"] and config["excel_sheet"]:
+                self.load_excel_data()
+
+            if config["source_folder"]:
+                self.load_next_pdf()
+
+            self._update_status("Ready")
+        except Exception as e:
+            self._handle_error(e, "initial data load")
+
+    def on_config_change(self) -> None:
+        """Handle configuration changes."""
+        self._update_status("Loading...")
+        self.after(100, self.load_initial_data)
 
     def _setup_styles(self) -> None:
         """Configure custom styles for the interface."""
         style = Style()
-        
-        # Configure main theme settings
-        style.configure(".", font=('Segoe UI', 10))
-        style.configure("Title.TLabel", font=('Segoe UI', 12, 'bold'))
-        style.configure("Header.TLabel", font=('Segoe UI', 11, 'bold'))
-        
-        # Configure button styles
-        style.configure("Primary.TButton",
-                       padding=10,
-                       font=('Segoe UI', 10, 'bold'),
-                       background="#007bff")
-        style.configure("Secondary.TButton",
-                       padding=10,
-                                 font=('Segoe UI', 10))
-        style.configure("Success.TButton",
-                       padding=10,
-                       font=('Segoe UI', 10, 'bold'),
-                       background="#28a745")
-        
-        # Configure frame styles
-        style.configure("Card.TFrame",
-                       background="#ffffff",
-                       relief="solid",
-                       borderwidth=1)
-        
-        # Configure Treeview
-        style.configure("Treeview",
-                       font=('Segoe UI', 10),
-                       rowheight=25)
-        style.configure("Treeview.Heading",
-                       font=('Segoe UI', 10, 'bold'))
 
-    def setup_ui(self) -> None:
+        # Configure main theme settings
+        style.configure(".", font=("Segoe UI", 10))
+        style.configure("Title.TLabel", font=("Segoe UI", 12, "bold"))
+        style.configure("Header.TLabel", font=("Segoe UI", 11, "bold"))
+
+        # Configure button styles
+        style.configure(
+            "Primary.TButton",
+            padding=10,
+            font=("Segoe UI", 10, "bold"),
+            background="#007bff",
+        )
+        style.configure("Secondary.TButton", padding=10, font=("Segoe UI", 10))
+        style.configure(
+            "Success.TButton",
+            padding=10,
+            font=("Segoe UI", 10, "bold"),
+            background="#28a745",
+        )
+
+        # Configure frame styles
+        style.configure(
+            "Card.TFrame", background="#ffffff", relief="solid", borderwidth=1
+        )
+
+        # Configure Treeview
+        style.configure("Treeview", font=("Segoe UI", 10), rowheight=25)
+        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
+
+    def _setup_ui(self) -> None:
         """Setup the main user interface with a modern, clean layout."""
         self.configure(padding=20)
-        
+
         # Configure grid weights for the main frame
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        
+
         # Create main container with three columns
         main_container = Frame(self)
-        main_container.grid(row=0, column=0, sticky='nsew')
-        
+        main_container.grid(row=0, column=0, sticky="nsew")
+
         # Configure column weights for the container
         main_container.grid_columnconfigure(0, weight=0)  # Left panel (collapsible)
         main_container.grid_columnconfigure(1, weight=0)  # Handle column
         main_container.grid_columnconfigure(2, weight=8)  # Center panel
         main_container.grid_columnconfigure(3, weight=1)  # Right panel
         main_container.grid_rowconfigure(0, weight=1)
-        
+
         # Left Panel (collapsible)
         self.left_panel = self._create_left_panel(main_container)
-        self.left_panel.grid(row=0, column=0, sticky='nsew')
-        
+        self.left_panel.grid(row=0, column=0, sticky="nsew")
+
         # Style for handle frame and button
         style = Style()
-        style.configure("Handle.TFrame", background='#e0e0e0')
-        style.configure("Handle.TButton", 
-                       padding=0,
-                       relief='flat',
-                       borderwidth=0)
-        style.map("Handle.TButton",
-                 background=[('active', '#d0d0d0')])
-        
+        style.configure("Handle.TFrame", background="#e0e0e0")
+        style.configure("Handle.TButton", padding=0, relief="flat", borderwidth=0)
+        style.map("Handle.TButton", background=[("active", "#d0d0d0")])
+
         # Handle for collapsing/expanding
         self.handle_frame = Frame(main_container, width=8, style="Handle.TFrame")
-        self.handle_frame.grid(row=0, column=1, sticky='nsew')
+        self.handle_frame.grid(row=0, column=1, sticky="nsew")
         self.handle_frame.grid_propagate(False)
-        
+
         self.handle_button = Button(
             self.handle_frame,
             text="⋮",  # Vertical dots as handle icon
             style="Handle.TButton",
-            command=self._toggle_left_panel
+            command=self._toggle_left_panel,
         )
-        self.handle_button.place(relx=0.5, rely=0.5, anchor='center', relheight=1.0)
-        
+        self.handle_button.place(relx=0.5, rely=0.5, anchor="center", relheight=1.0)
+
         # Make handle draggable
-        self.handle_button.bind('<Enter>', lambda e: self.handle_button.configure(cursor='sb_h_double_arrow'))
-        self.handle_button.bind('<Leave>', lambda e: self.handle_button.configure(cursor=''))
-        self.handle_button.bind('<Button-1>', self._start_resize)
-        self.handle_button.bind('<B1-Motion>', self._do_resize)
-        self.handle_button.bind('<ButtonRelease-1>', self._end_resize)
-        
+        self.handle_button.bind(
+            "<Enter>",
+            lambda e: self.handle_button.configure(cursor="sb_h_double_arrow"),
+        )
+        self.handle_button.bind(
+            "<Leave>", lambda e: self.handle_button.configure(cursor="")
+        )
+        self.handle_button.bind("<Button-1>", self._start_resize)
+        self.handle_button.bind("<B1-Motion>", self._do_resize)
+        self.handle_button.bind("<ButtonRelease-1>", self._end_resize)
+
         # Center Panel
         self.center_panel = self._create_center_panel(main_container)
-        self.center_panel.grid(row=0, column=2, sticky='nsew', padx=(5, 5))
-        
+        self.center_panel.grid(row=0, column=2, sticky="nsew", padx=(5, 5))
+
         # Right Panel
         self.right_panel = self._create_right_panel(main_container)
-        self.right_panel.grid(row=0, column=3, sticky='nsew', padx=(5, 0))
-        
+        self.right_panel.grid(row=0, column=3, sticky="nsew", padx=(5, 0))
+
         # Store initial width of left panel
         self.left_panel_width = 250  # Default width
         self.left_panel_visible = True
         self.left_panel.configure(width=self.left_panel_width)
         self.left_panel.grid_propagate(False)
-        
+
         # Bind to Configure event to handle window resizing
-        self.bind('<Configure>', self._on_window_resize)
+        self.bind("<Configure>", self._on_window_resize)
 
     def _start_resize(self, event: TkEvent) -> None:
         """Start resizing the left panel."""
@@ -962,19 +1004,21 @@ class ProcessingTab(Frame):
         self.start_width = self.left_panel.winfo_width()
         self.resizing = True
         style = Style()
-        style.configure("Handle.TFrame", background='#d0d0d0')
+        style.configure("Handle.TFrame", background="#d0d0d0")
 
     def _do_resize(self, event: TkEvent) -> None:
         """Resize the left panel based on mouse drag."""
-        if self.left_panel_visible and hasattr(self, 'resizing') and self.resizing:
+        if self.left_panel_visible and hasattr(self, "resizing") and self.resizing:
             delta_x = event.x_root - self.start_x
-            new_width = max(200, min(400, self.start_width + delta_x))  # Limit width between 200 and 400
-            
+            new_width = max(
+                200, min(400, self.start_width + delta_x)
+            )  # Limit width between 200 and 400
+
             # Only update if width actually changed
             if new_width != self.left_panel_width:
                 self.left_panel_width = new_width
                 self.left_panel.configure(width=new_width)
-                
+
                 # Update layout
                 self.update_idletasks()
 
@@ -982,7 +1026,7 @@ class ProcessingTab(Frame):
         """End the resize operation."""
         self.resizing = False
         style = Style()
-        style.configure("Handle.TFrame", background='#e0e0e0')
+        style.configure("Handle.TFrame", background="#e0e0e0")
 
     def _toggle_left_panel(self) -> None:
         """Toggle the visibility of the left panel."""
@@ -995,18 +1039,25 @@ class ProcessingTab(Frame):
             self.handle_button.configure(text="⋮")  # Vertical dots when expanded
             self.left_panel_visible = True
             self.left_panel.configure(width=self.left_panel_width)
-        
+
         # Update layout
         self.update_idletasks()
 
     def _on_window_resize(self, event: TkEvent) -> None:
         """Handle window resize events."""
         if event.widget == self:
-            # Ensure minimum window width
+            # Ensure minimum width for panels
             min_width = 800 if self.left_panel_visible else 600
-            if self.winfo_width() < min_width:
-                self.master.geometry(f"{min_width}x{self.winfo_height()}")
-            
+            current_width = self.winfo_width()
+
+            if current_width < min_width:
+                # Instead of changing window geometry, adjust panel sizes
+                if self.left_panel_visible:
+                    self.left_panel_width = max(
+                        200, self.left_panel_width - (min_width - current_width)
+                    )
+                    self.left_panel.configure(width=self.left_panel_width)
+
             # Update layout
             self.update_idletasks()
 
@@ -1015,31 +1066,37 @@ class ProcessingTab(Frame):
         panel = Frame(parent)
         panel.grid_columnconfigure(0, weight=1)
         panel.grid_rowconfigure(1, weight=1)  # Make queue section expandable
-        
+
         # File Information Section
         info_frame = LabelFrame(panel, text="File Information", padding=10)
-        info_frame.grid(row=0, column=0, sticky='nsew', padx=5, pady=5)
-        
+        info_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+
         # File info container
         file_info_container = Frame(info_frame)
-        file_info_container.pack(fill='x', pady=5)
-        
-        self.file_info = Label(file_info_container, text="No file loaded",
-                             style="Header.TLabel", wraplength=200)
-        self.file_info.pack(fill='x', pady=5)
-        
-        # Status label
-        self.status_var = StringVar(value="Status: Ready")
-        status_label = Label(info_frame, textvariable=self.status_var)
-        status_label.pack(fill='x')
-        
+        file_info_container.pack(fill="x", pady=5)
+
+        self.file_info = Label(
+            file_info_container,
+            text="No file loaded",
+            style="Header.TLabel",
+            wraplength=200,
+        )
+        self.file_info.pack(fill="x", pady=5)
+
+        # Queue statistics
+        stats_frame = Frame(info_frame)
+        stats_frame.pack(fill="x", pady=5)
+
+        self.queue_stats = Label(stats_frame, text="Queue: 0 total")
+        self.queue_stats.pack(fill="x")
+
         # Processing Queue Section
         queue_frame = LabelFrame(panel, text="Processing Queue", padding=10)
-        queue_frame.grid(row=1, column=0, sticky='nsew', padx=5, pady=5)
-        
+        queue_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+
         self.queue_display = QueueDisplay(queue_frame)
-        self.queue_display.pack(fill='both', expand=True)
-        
+        self.queue_display.pack(fill="both", expand=True)
+
         return panel
 
     def _create_center_panel(self, parent: Widget) -> Frame:
@@ -1047,103 +1104,118 @@ class ProcessingTab(Frame):
         panel = Frame(parent)
         panel.grid_columnconfigure(0, weight=1)
         panel.grid_rowconfigure(0, weight=1)
-        
+
         # PDF Viewer Section
         viewer_frame = LabelFrame(panel, text="PDF Viewer", padding=10)
-        viewer_frame.grid(row=0, column=0, sticky='nsew')
+        viewer_frame.grid(row=0, column=0, sticky="nsew")
         viewer_frame.grid_columnconfigure(0, weight=1)
         viewer_frame.grid_rowconfigure(0, weight=1)
-        
+
         self.pdf_viewer = PDFViewer(viewer_frame, self.pdf_manager)
-        self.pdf_viewer.grid(row=0, column=0, sticky='nsew')
-        
+        self.pdf_viewer.grid(row=0, column=0, sticky="nsew")
+
         # Viewer Controls
         controls_frame = Frame(viewer_frame)
-        controls_frame.grid(row=1, column=0, sticky='ew', pady=(10, 0))
-        
+        controls_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+
         # Zoom Controls
         zoom_frame = Frame(controls_frame)
-        zoom_frame.pack(side='left')
-        
-        Button(zoom_frame, text="−", width=3,
-                  command=self.pdf_viewer.zoom_out).pack(side='left', padx=2)
+        zoom_frame.pack(side="left")
+
+        Button(zoom_frame, text="−", width=3, command=self.pdf_viewer.zoom_out).pack(
+            side="left", padx=2
+        )
         self.zoom_label = Label(zoom_frame, text="100%", width=6)
-        self.zoom_label.pack(side='left', padx=5)
-        Button(zoom_frame, text="+", width=3,
-                  command=self.pdf_viewer.zoom_in).pack(side='left', padx=2)
-        
+        self.zoom_label.pack(side="left", padx=5)
+        Button(zoom_frame, text="+", width=3, command=self.pdf_viewer.zoom_in).pack(
+            side="left", padx=2
+        )
+
         # Rotation Controls
         rotation_frame = Frame(controls_frame)
-        rotation_frame.pack(side='right')
-        
-        Button(rotation_frame, text="↶", width=3,
-                  command=self.rotate_counterclockwise).pack(side='left', padx=2)
+        rotation_frame.pack(side="right")
+
+        Button(
+            rotation_frame, text="↶", width=3, command=self.rotate_counterclockwise
+        ).pack(side="left", padx=2)
         self.rotation_label = Label(rotation_frame, text="0°", width=6)
-        self.rotation_label.pack(side='left', padx=5)
-        Button(rotation_frame, text="↷", width=3,
-                  command=self.rotate_clockwise).pack(side='left', padx=2)
+        self.rotation_label.pack(side="left", padx=5)
+        Button(rotation_frame, text="↷", width=3, command=self.rotate_clockwise).pack(
+            side="left", padx=2
+        )
 
         return panel
 
     def _create_right_panel(self, parent: Widget) -> Frame:
         """Create the right panel containing filters and actions."""
         panel = Frame(parent)
-        
+
         # Filters Frame (replacing notebook)
         filters_frame = LabelFrame(panel, text="Filters", padding=10)
-        filters_frame.pack(fill='both', expand=True, pady=(0, 10))
-        
+        filters_frame.pack(fill="both", expand=True, pady=(0, 10))
+
         self._setup_filters(filters_frame)
-        
+
         # Action Buttons
         actions_frame = Frame(panel)
-        actions_frame.pack(fill='x', pady=(10, 0))
-        
+        actions_frame.pack(fill="x", pady=(10, 0))
+
         self.confirm_button = Button(
             actions_frame,
             text="Process File (Enter)",
             command=self.process_current_file,
-            style="Success.TButton"
+            style="Success.TButton",
         )
-        self.confirm_button.pack(fill='x', pady=(0, 5))
-        
+        self.confirm_button.pack(fill="x", pady=(0, 5))
+
         self.skip_button = Button(
             actions_frame,
             text="Next File (Ctrl+N)",
             command=self.load_next_pdf,
-            style="Primary.TButton"
+            style="Primary.TButton",
         )
-        self.skip_button.pack(fill='x')
-        
+        self.skip_button.pack(fill="x")
+
         return panel
 
     def _setup_filters(self, parent: Widget) -> None:
         """Setup the filter controls with improved styling."""
-        self.filter1_label = Label(parent, text="",
-                                 style="Header.TLabel")
+        self.filter1_label = Label(parent, text="", style="Header.TLabel")
         self.filter1_label.pack(pady=(0, 5))
-        self.filter1_frame = FuzzySearchFrame(parent, width=30,
-                                            identifier='processing_filter1')
-        self.filter1_frame.pack(fill='x', pady=(0, 15))
-        
-        self.filter2_label = Label(parent, text="",
-                                 style="Header.TLabel")
-        self.filter2_label.pack(pady=(0, 5))
-        self.filter2_frame = FuzzySearchFrame(parent, width=30,
-                                            identifier='processing_filter2')
-        self.filter2_frame.pack(fill='x', pady=(0, 15))
+        self.filter1_frame = FuzzySearchFrame(
+            parent,
+            width=30,
+            identifier="processing_filter1",
+            on_tab=self._handle_filter1_tab,
+        )
+        self.filter1_frame.pack(fill="x", pady=(0, 15))
 
-        self.filter3_label = Label(parent, text="",
-                                 style="Header.TLabel")
+        self.filter2_label = Label(parent, text="", style="Header.TLabel")
+        self.filter2_label.pack(pady=(0, 5))
+        self.filter2_frame = FuzzySearchFrame(
+            parent,
+            width=30,
+            identifier="processing_filter2",
+            on_tab=self._handle_filter2_tab,
+        )
+        self.filter2_frame.pack(fill="x", pady=(0, 15))
+
+        self.filter3_label = Label(parent, text="", style="Header.TLabel")
         self.filter3_label.pack(pady=(0, 5))
-        self.filter3_frame = FuzzySearchFrame(parent, width=30,
-                                            identifier='processing_filter3')
-        self.filter3_frame.pack(fill='x')
-        
+        self.filter3_frame = FuzzySearchFrame(
+            parent,
+            width=30,
+            identifier="processing_filter3",
+            on_tab=self._handle_filter3_tab,
+        )
+        self.filter3_frame.pack(fill="x")
+
         # Bind events
-        self.filter1_frame.bind('<<ValueSelected>>', lambda e: self.on_filter1_select())
-        self.filter2_frame.bind('<<ValueSelected>>', lambda e: self.on_filter2_select())
-        self.filter3_frame.bind('<<ValueSelected>>', lambda e: self.update_confirm_button())
+        self.filter1_frame.bind("<<ValueSelected>>", lambda e: self.on_filter1_select())
+        self.filter2_frame.bind("<<ValueSelected>>", lambda e: self.on_filter2_select())
+        self.filter3_frame.bind(
+            "<<ValueSelected>>", lambda e: self.update_confirm_button()
+        )
 
         # Bind keyboard navigation
         self._bind_keyboard_shortcuts()
@@ -1151,34 +1223,25 @@ class ProcessingTab(Frame):
     def _bind_keyboard_shortcuts(self) -> None:
         """Bind keyboard shortcuts for improved navigation and accessibility."""
         # Tab navigation between filters
-        self.filter1_frame.entry.bind('<Tab>', self._handle_filter1_tab)
-        self.filter2_frame.entry.bind('<Tab>', self._handle_filter2_tab)
-        self.filter3_frame.entry.bind('<Tab>', self._handle_filter3_tab)
-        self.filter1_frame.listbox.bind('<Tab>', self._handle_filter1_tab)
-        self.filter2_frame.listbox.bind('<Tab>', self._handle_filter2_tab)
-        self.filter3_frame.listbox.bind('<Tab>', self._handle_filter3_tab)
-        
-        # Global shortcuts
+        self.filter1_frame.entry.bind("<Tab>", self._handle_filter1_tab)
+        self.filter2_frame.entry.bind("<Tab>", self._handle_filter2_tab)
+        self.filter3_frame.entry.bind("<Tab>", self._handle_filter3_tab)
+        self.filter1_frame.listbox.bind("<Tab>", self._handle_filter1_tab)
+        self.filter2_frame.listbox.bind("<Tab>", self._handle_filter2_tab)
+        self.filter3_frame.listbox.bind("<Tab>", self._handle_filter3_tab)
+
+        # Bind shortcuts to the main frame
         shortcuts = {
-            '<Return>': self._handle_return_key,
-            '<Control-n>': lambda e: self.load_next_pdf(),
-            '<Control-N>': lambda e: self.load_next_pdf(),
-            '<Control-plus>': lambda e: self.pdf_viewer.zoom_in(),
-            '<Control-minus>': lambda e: self.pdf_viewer.zoom_out(),
-            '<Control-r>': lambda e: self.rotate_clockwise(),
-            '<Control-R>': lambda e: self.rotate_counterclockwise()
+            "<Return>": self._handle_return_key,
+            "<Control-n>": lambda e: self.load_next_pdf(),
+            "<Control-N>": lambda e: self.load_next_pdf(),
+            "<Control-plus>": lambda e: self.pdf_viewer.zoom_in(),
+            "<Control-minus>": lambda e: self.pdf_viewer.zoom_out(),
+            "<Control-r>": lambda e: self.rotate_clockwise(),
+            "<Control-R>": lambda e: self.rotate_counterclockwise(),
         }
-        
-        # Bind shortcuts recursively to all widgets
-        def _bind_recursive(widget: Widget) -> None:
-            for key, callback in shortcuts.items():
-                widget.bind(key, callback)
-            for child in widget.winfo_children():
-                _bind_recursive(child)
-        
-        _bind_recursive(self)
-        
-        # Also bind to the main frame
+
+        # Bind all shortcuts to the main frame
         for key, callback in shortcuts.items():
             self.bind_all(key, callback)
 
@@ -1187,9 +1250,11 @@ class ProcessingTab(Frame):
         if self.filter1_frame.listbox.winfo_ismapped():
             # If listbox is visible, select first item and move to filter2
             if self.filter1_frame.listbox.size() > 0:
-                self.filter1_frame.listbox.selection_clear(0, END)
-                self.filter1_frame.listbox.selection_set(0)
-                self.filter1_frame._on_select(None)
+                # Only select first item if nothing is currently selected
+                if not self.filter1_frame.listbox.curselection():
+                    self.filter1_frame.listbox.selection_clear(0, END)
+                    self.filter1_frame.listbox.selection_set(0)
+                    self.filter1_frame._on_select(None)
         self.filter2_frame.entry.focus_set()
         return "break"
 
@@ -1198,9 +1263,11 @@ class ProcessingTab(Frame):
         if self.filter2_frame.listbox.winfo_ismapped():
             # If listbox is visible, select first item
             if self.filter2_frame.listbox.size() > 0:
-                self.filter2_frame.listbox.selection_clear(0, END)
-                self.filter2_frame.listbox.selection_set(0)
-                self.filter2_frame._on_select(None)
+                # Only select first item if nothing is currently selected
+                if not self.filter2_frame.listbox.curselection():
+                    self.filter2_frame.listbox.selection_clear(0, END)
+                    self.filter2_frame.listbox.selection_set(0)
+                    self.filter2_frame._on_select(None)
         self.filter3_frame.entry.focus_set()
         return "break"
 
@@ -1209,15 +1276,17 @@ class ProcessingTab(Frame):
         if self.filter3_frame.listbox.winfo_ismapped():
             # If listbox is visible, select first item
             if self.filter3_frame.listbox.size() > 0:
-                self.filter3_frame.listbox.selection_clear(0, END)
-                self.filter3_frame.listbox.selection_set(0)
-                self.filter3_frame._on_select(None)
+                # Only select first item if nothing is currently selected
+                if not self.filter3_frame.listbox.curselection():
+                    self.filter3_frame.listbox.selection_clear(0, END)
+                    self.filter3_frame.listbox.selection_set(0)
+                    self.filter3_frame._on_select(None)
         self.confirm_button.focus_set()
         return "break"
 
     def _handle_return_key(self, event: Event) -> str:
         """Handle Return key press to process the current file."""
-        if str(self.confirm_button['state']) != 'disabled':
+        if str(self.confirm_button["state"]) != "disabled":
             self.process_current_file()
         return "break"
 
@@ -1230,43 +1299,57 @@ class ProcessingTab(Frame):
     def load_excel_data(self) -> None:
         try:
             config = self.config_manager.get_config()
-            if not all([config['excel_file'], config['excel_sheet'],
-                       config['filter1_column'], config['filter2_column'],
-                       config['filter3_column']]):
+            if not all(
+                [
+                    config["excel_file"],
+                    config["excel_sheet"],
+                    config["filter1_column"],
+                    config["filter2_column"],
+                    config["filter3_column"],
+                ]
+            ):
                 print("Missing configuration values")
                 return
-                
-            self.excel_manager.load_excel_data(config['excel_file'],
-                                             config['excel_sheet'])
-            
-            self.filter1_label['text'] = config['filter1_column']
-            self.filter2_label['text'] = config['filter2_column']
-            self.filter3_label['text'] = config['filter3_column']
-            
+
+            self.excel_manager.load_excel_data(
+                config["excel_file"], config["excel_sheet"]
+            )
+
+            self.filter1_label["text"] = config["filter1_column"]
+            self.filter2_label["text"] = config["filter2_column"]
+            self.filter3_label["text"] = config["filter3_column"]
+
             df = self.excel_manager.excel_data
-            
+
             # Convert all values to strings to ensure consistent type handling
             def safe_convert_to_str(val):
                 if pd.isna(val):  # Handle NaN/None values
                     return ""
                 return str(val).strip()
-            
+
             # Convert column values to strings
-            self.all_values1 = sorted(df[config['filter1_column']].astype(str).unique().tolist())
-            self.all_values2 = sorted(df[config['filter2_column']].astype(str).unique().tolist())
-            self.all_values3 = sorted(df[config['filter3_column']].astype(str).unique().tolist())
-            
+            self.all_values1 = sorted(
+                df[config["filter1_column"]].astype(str).unique().tolist()
+            )
+            self.all_values2 = sorted(
+                df[config["filter2_column"]].astype(str).unique().tolist()
+            )
+            self.all_values3 = sorted(
+                df[config["filter3_column"]].astype(str).unique().tolist()
+            )
+
             # Strip whitespace and ensure string type
             self.all_values1 = [safe_convert_to_str(x) for x in self.all_values1]
             self.all_values2 = [safe_convert_to_str(x) for x in self.all_values2]
             self.all_values3 = [safe_convert_to_str(x) for x in self.all_values3]
-            
+
             self.filter1_frame.set_values(self.all_values1)
             self.filter2_frame.set_values(self.all_values2)
             self.filter3_frame.set_values(self.all_values3)
-            
+
         except Exception as e:
             import traceback
+
             print(f"[DEBUG] Error in load_excel_data:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}")
@@ -1276,24 +1359,29 @@ class ProcessingTab(Frame):
             config = self.config_manager.get_config()
             if self.excel_manager.excel_data is not None:
                 selected_value = str(self.filter1_frame.get()).strip()
-                
+
                 df = self.excel_manager.excel_data
                 # Convert column to string for comparison
-                df[config['filter1_column']] = df[config['filter1_column']].astype(str)
-                filtered_df = df[df[config['filter1_column']].str.strip() == selected_value]
-                
-                filtered_values2 = sorted(filtered_df[config['filter2_column']].astype(str).unique().tolist())
+                df[config["filter1_column"]] = df[config["filter1_column"]].astype(str)
+                filtered_df = df[
+                    df[config["filter1_column"]].str.strip() == selected_value
+                ]
+
+                filtered_values2 = sorted(
+                    filtered_df[config["filter2_column"]].astype(str).tolist()
+                )
+                self.filter2_frame.clear()
                 filtered_values2 = [str(x).strip() for x in filtered_values2]
                 self.filter2_frame.set_values(filtered_values2)
-                
-                # Clear filter3 since it depends on filter2
-                self.filter3_frame.set('')
-                self.filter3_frame.set_values(self.all_values3)
-                
+
+                filtered_values3 = sorted(
+                    filtered_df[config["filter3_column"]].astype(str).tolist()
+                )
+                filtered_values3 = [str(x).strip() for x in filtered_values3]
+                self.filter3_frame.clear()
+                self.filter3_frame.set_values(filtered_values3)
+
         except Exception as e:
-            import traceback
-            print(f"[DEBUG] Error in on_filter1_select:")
-            print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
 
     def on_filter2_select(self) -> None:
@@ -1302,97 +1390,113 @@ class ProcessingTab(Frame):
             if self.excel_manager.excel_data is not None:
                 selected_value1 = str(self.filter1_frame.get()).strip()
                 selected_value2 = str(self.filter2_frame.get()).strip()
-                
+
                 df = self.excel_manager.excel_data
                 # Convert columns to string for comparison
-                df[config['filter1_column']] = df[config['filter1_column']].astype(str)
-                df[config['filter2_column']] = df[config['filter2_column']].astype(str)
-                
+                df[config["filter1_column"]] = df[config["filter1_column"]].astype(str)
+                df[config["filter2_column"]] = df[config["filter2_column"]].astype(str)
+
                 filtered_df = df[
-                    (df[config['filter1_column']].str.strip() == selected_value1) &
-                    (df[config['filter2_column']].str.strip() == selected_value2)
+                    (df[config["filter1_column"]].str.strip() == selected_value1)
+                    & (df[config["filter2_column"]].str.strip() == selected_value2)
                 ]
-                
-                filtered_values3 = sorted(filtered_df[config['filter3_column']].astype(str).unique().tolist())
+
+                filtered_values3 = sorted(
+                    filtered_df[config["filter3_column"]].astype(str).tolist()
+                )
                 filtered_values3 = [str(x).strip() for x in filtered_values3]
+                self.filter3_frame.clear()
                 self.filter3_frame.set_values(filtered_values3)
-                
+
         except Exception as e:
             import traceback
+
             print(f"[DEBUG] Error in on_filter2_select:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
 
     def update_confirm_button(self) -> None:
         """Update the confirm button state based on filter selections."""
-        if self.filter1_frame.get() and self.filter2_frame.get() and self.filter3_frame.get():
-            self.confirm_button.state(['!disabled'])
-            self.status_var.set("Status: Ready to process")
+        if (
+            self.filter1_frame.get()
+            and self.filter2_frame.get()
+            and self.filter3_frame.get()
+        ):
+            self.confirm_button.state(["!disabled"])
+            self._update_status("Ready to process")
         else:
-            self.confirm_button.state(['disabled'])
-            self.status_var.set("Status: Select all filters")
+            self.confirm_button.state(["disabled"])
+            self._update_status("Select all filters")
 
     def rotate_clockwise(self) -> None:
         """Rotate the PDF view clockwise."""
         self.pdf_manager.rotate_page(clockwise=True)
         self.rotation_label.config(text=f"{self.pdf_manager.get_rotation()}°")
-        self.pdf_viewer.display_pdf(self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False)
+        self.pdf_viewer.display_pdf(
+            self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False
+        )
 
     def rotate_counterclockwise(self) -> None:
         """Rotate the PDF view counterclockwise."""
         self.pdf_manager.rotate_page(clockwise=False)
         self.rotation_label.config(text=f"{self.pdf_manager.get_rotation()}°")
-        self.pdf_viewer.display_pdf(self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False)
+        self.pdf_viewer.display_pdf(
+            self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False
+        )
 
     def load_next_pdf(self) -> None:
         """Load the next PDF file from the source folder."""
         try:
             config = self.config_manager.get_config()
-            if not config['source_folder']:
-                self.status_var.set("Status: Source folder not configured")
+            if not config["source_folder"]:
+                self._update_status("Source folder not configured")
                 return
-                
+
             # Clear current display if no PDF is loaded
-            if not path.exists(config['source_folder']):
+            if not path.exists(config["source_folder"]):
                 self.current_pdf = None
-                self.file_info['text'] = "Source folder not found"
-                self.status_var.set("Status: Source folder does not exist")
-                ErrorDialog(self, "Error", f"Source folder not found: {config['source_folder']}")
+                self.file_info["text"] = "Source folder not found"
+                self._update_status("Source folder does not exist")
+                ErrorDialog(
+                    self, "Error", f"Source folder not found: {config['source_folder']}"
+                )
                 return
-                
-            next_pdf = self.pdf_manager.get_next_pdf(config['source_folder'])
+
+            next_pdf = self.pdf_manager.get_next_pdf(config["source_folder"])
             if next_pdf:
                 self.current_pdf = next_pdf
-                self.file_info['text'] = path.basename(next_pdf)
-                self.pdf_viewer.display_pdf(next_pdf, 1.0)
+                self.file_info["text"] = path.basename(next_pdf)
+                self.pdf_viewer.display_pdf(next_pdf, 1)
                 self.rotation_label.config(text="0°")
                 self.zoom_label.config(text="100%")
-                
+
                 # Clear all filters
                 self.filter1_frame.clear()
                 self.filter2_frame.clear()
                 self.filter3_frame.clear()
-                
+
                 # Reset available values for dependent filters
+                self.filter1_frame.set_values(self.all_values1)
                 self.filter2_frame.set_values(self.all_values2)
                 self.filter3_frame.set_values(self.all_values3)
-                
+
                 # Focus the first fuzzy search entry
                 self.filter1_frame.entry.focus_set()
-                
-                self.status_var.set("Status: New file loaded")
+
+                self._update_status("New file loaded")
             else:
                 self.current_pdf = None
-                self.file_info['text'] = "No PDF files found"
-                self.status_var.set("Status: No files to process")
+                self.file_info["text"] = "No PDF files found"
+                self._update_status("No files to process")
                 # Clear the PDF viewer
-                if hasattr(self.pdf_viewer, 'canvas'):
+                if hasattr(self.pdf_viewer, "canvas"):
                     self.pdf_viewer.canvas.delete("all")
                 # Disable the confirm button since there's no file to process
-                self.confirm_button.state(['disabled'])
-                
+                self.confirm_button.state(["disabled"])
+
         except Exception as e:
             import traceback
+
             print(f"[DEBUG] Error in load_next_pdf:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading next PDF: {str(e)}")
@@ -1400,62 +1504,60 @@ class ProcessingTab(Frame):
     def process_current_file(self) -> None:
         """Process the current PDF file with selected filters."""
         if not self.current_pdf:
-            self.status_var.set("Status: No file loaded")
+            self._update_status("No file loaded")
             ErrorDialog(self, "Error", "No PDF file loaded")
             return
-            
+
         if not path.exists(self.current_pdf):
-            self.status_var.set("Status: File no longer exists")
+            self._update_status("File no longer exists")
             ErrorDialog(self, "Error", f"File no longer exists: {self.current_pdf}")
             self.load_next_pdf()  # Try to load the next file
             return
-            
+
         try:
             value1 = self.filter1_frame.get()
             value2 = self.filter2_frame.get()
             value3 = self.filter3_frame.get()
-            
+
             if not value1 or not value2 or not value3:
-                self.status_var.set("Status: Select all filters")
+                self._update_status("Select all filters")
                 return
 
             # Create task
             task = PDFTask(
-                pdf_path=self.current_pdf,
-                value1=value1,
-                value2=value2,
-                value3=value3
+                pdf_path=self.current_pdf, value1=value1, value2=value2, value3=value3
             )
-            
+
             # Add to queue display
-            self.queue_display.table.insert('', 'end',
-                                          values=(task.pdf_path, 'Pending'),
-                                          tags=('pending',))
-            
+            self.queue_display.table.insert(
+                "", "end", values=(task.pdf_path, "Pending"), tags=("pending",)
+            )
+
             # Add to processing queue
             self.pdf_queue.add_task(task)
-            
+
             # Update status and load next file
-            self.status_var.set("Status: File queued for processing")
+            self._update_status("File queued for processing")
             self.load_next_pdf()
-            
+
             # Clear all filters
             self.filter1_frame.clear()
             self.filter2_frame.clear()
             self.filter3_frame.clear()
-            
+
             # Reset available values for dependent filters
             self.filter2_frame.set_values(self.all_values2)
             self.filter3_frame.set_values(self.all_values3)
-            
+
             # Focus the first fuzzy search entry
             self.filter1_frame.entry.focus_set()
-                
+
         except Exception as e:
             import traceback
+
             print(f"[DEBUG] Error in process_current_file:")
             print(traceback.format_exc())
-            self.status_var.set("Status: Processing error")
+            self._update_status("Processing error")
             ErrorDialog(self, "Error", str(e))
 
     def _show_error_details(self, event: TkEvent) -> None:
@@ -1463,27 +1565,30 @@ class ProcessingTab(Frame):
         selection = self.queue_display.table.selection()
         if not selection:
             return
-            
+
         item = selection[0]
-        task_path = self.queue_display.table.item(item)['values'][0]
-        
+        task_path = self.queue_display.table.item(item)["values"][0]
+
         with self.pdf_queue.lock:
             task = self.pdf_queue.tasks.get(task_path)
-            if task and task.status == 'failed' and task.error_msg:
-                ErrorDialog(self, "Processing Error",
-                          f"Error processing {path.basename(task_path)}:\n{task.error_msg}")
+            if task and task.status == "failed" and task.error_msg:
+                ErrorDialog(
+                    self,
+                    "Processing Error",
+                    f"Error processing {path.basename(task_path)}:\n{task.error_msg}",
+                )
 
     def _clear_completed(self) -> None:
         """Clear completed tasks from the queue."""
         self.pdf_queue.clear_completed()
         self.update_queue_display()
-        self.status_var.set("Status: Completed tasks cleared")
+        self._update_status("Completed tasks cleared")
 
     def _retry_failed(self) -> None:
         """Retry failed tasks in the queue."""
         self.pdf_queue.retry_failed()
         self.update_queue_display()
-        self.status_var.set("Status: Retrying failed tasks")
+        self._update_status("Retrying failed tasks")
 
     def update_queue_display(self) -> None:
         """Update the queue display with current tasks."""
@@ -1491,18 +1596,22 @@ class ProcessingTab(Frame):
             with self.pdf_queue.lock:
                 tasks = self.pdf_queue.tasks.copy()
             self.queue_display.update_display(tasks)
-            
-            # Update status with queue statistics
+
+            # Update queue statistics
             total = len(tasks)
-            completed = sum(1 for t in tasks.values() if t.status == 'completed')
-            failed = sum(1 for t in tasks.values() if t.status == 'failed')
-            pending = sum(1 for t in tasks.values() if t.status in ['pending', 'processing'])
-            
+            completed = sum(1 for t in tasks.values() if t.status == "completed")
+            failed = sum(1 for t in tasks.values() if t.status == "failed")
+            pending = sum(
+                1 for t in tasks.values() if t.status in ["pending", "processing"]
+            )
+
             if total > 0:
-                self.status_var.set(
-                    f"Status: {completed} completed, {failed} failed, {pending} pending"
+                self.queue_stats.configure(
+                    text=f"Queue: {total} total ({completed} completed, {failed} failed, {pending} pending)"
                 )
-            
+            else:
+                self.queue_stats.configure(text="Queue: 0 total")
+
         except Exception as e:
             print(f"Error updating queue display: {str(e)}")
 
@@ -1514,7 +1623,7 @@ class ProcessingTab(Frame):
     def __del__(self) -> None:
         """Clean up resources when the tab is destroyed."""
         try:
-            if hasattr(self, 'pdf_queue'):
+            if hasattr(self, "pdf_queue"):
                 self.pdf_queue.stop()
         except:
             pass

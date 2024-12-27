@@ -1,8 +1,9 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext
+import traceback
 
 class ErrorDialog(tk.Toplevel):
-    def __init__(self, parent, title, message):
+    def __init__(self, parent, title, error, show_traceback=True):
         super().__init__(parent)
         self.title(title)
         
@@ -21,6 +22,14 @@ class ErrorDialog(tk.Toplevel):
         # Set size and position
         self.geometry(f'{window_width}x{window_height}+{center_x}+{center_y}')
         self.minsize(window_width, window_height)
+        
+        # Format error message
+        if isinstance(error, Exception) and show_traceback:
+            message = f"Error: {str(error)}\n\nTraceback:\n{traceback.format_exc()}"
+        elif isinstance(error, Exception):
+            message = f"Error: {str(error)}"
+        else:
+            message = str(error)
         
         # Add message
         message_frame = ttk.Frame(self)

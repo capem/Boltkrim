@@ -7,7 +7,6 @@ from typing import Optional, List, Tuple
 from time import sleep
 from random import uniform
 import pandas as pd
-from .template_manager import TemplateManager
 
 def is_path_available(filepath: str, timeout: int = 2) -> bool:
     """Check if a network path is available with timeout.
@@ -70,7 +69,6 @@ class ExcelManager:
         self._cached_sheet = None
         self._last_modified = None
         self._network_timeout = 5  # 5 seconds timeout for network operations
-        self.template_manager = TemplateManager()
         
     @retry_with_backoff
     def load_excel_data(self, excel_file: str, sheet_name: str) -> bool:
@@ -201,7 +199,12 @@ class ExcelManager:
                     copy2(excel_file, backup_file)
                     backup_created = True
                     
-                    print(f"[DEBUG] Using PDF path: {pdf_path}")
+                    # Create relative path for Excel link
+                    rel_path = path.relpath(
+                        pdf_path,  # Use the path directly since it's already sanitized by PDFManager
+                        path.dirname(excel_file)
+                    )
+                    print(f"[DEBUG] Created relative path: {rel_path}")
                     
                     # Remove existing hyperlink if any
                     try:
@@ -215,7 +218,7 @@ class ExcelManager:
                     print("[DEBUG] Adding new hyperlink")
                     ws.Hyperlinks.Add(
                         Anchor=cell,
-                        Address=pdf_path,
+                        Address=rel_path,
                         TextToDisplay=original_value or path.basename(pdf_path)
                     )
                     

@@ -5,9 +5,9 @@ from os import path
 class ConfigManager:
     """Manages configuration settings for the application with file persistence and change notifications."""
     
-    def __init__(self, config_file: str = 'config.json') -> None:
+    def __init__(self) -> None:
         """Initialize the config manager with a default or specified config file."""
-        self.config_file: str = config_file
+        self.config_file: str = 'config.json'
         self.presets_file: str = 'presets.json'  # File to store preset configurations
         self.default_config: Dict[str, str] = {
             'source_folder': '',
@@ -16,8 +16,8 @@ class ConfigManager:
             'excel_sheet': '',
             'filter1_column': '',  
             'filter2_column': '',
-            'filter3_column': '',  # Added for third filter
-            'output_template': '{processed_folder}/{filter1|str.upper} - {filter2|str.upper}.pdf'
+            'filter3_column': '',
+            'output_template': ''
         }
         self.config: Dict[str, str] = self.default_config.copy()
         self.presets: Dict[str, Dict[str, str]] = {}  # Store preset configurations
@@ -36,14 +36,6 @@ class ConfigManager:
         if callback not in self.change_callbacks:
             self.change_callbacks.append(callback)
             
-    def remove_change_callback(self, callback: Callable[[], None]) -> None:
-        """Remove a previously added callback.
-        
-        Args:
-            callback: The callback function to remove
-        """
-        if callback in self.change_callbacks:
-            self.change_callbacks.remove(callback)
             
     def _notify_callbacks(self) -> None:
         """Notify all registered callbacks about config changes."""
