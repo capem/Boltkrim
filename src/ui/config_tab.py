@@ -294,20 +294,20 @@ class ConfigTab(Frame):
             self.excel_file_entry.insert(0, file)
             self.update_sheet_list()
             
-    def update_sheet_list(self):
-        """Update sheet list in combobox."""
+    def update_sheet_list(self, config=None):
+        """Update sheet list in combobox.
+        
+        Args:
+            config (dict, optional): Configuration to use. If None, uses default config.
+        """
         try:
             excel_file = self.excel_file_entry.get()
-            if excel_file:  
+            if excel_file:
                 sheet_names = self.excel_manager.get_sheet_names(excel_file)
                 self.sheet_combobox['values'] = sheet_names
-                
-                config = self.config_manager.get_config()
-                if config['excel_sheet'] in sheet_names:
-                    self.sheet_combobox.set(config['excel_sheet'])
-                else:
-                    self.sheet_combobox.set(sheet_names[0])
-                    
+                if config is None:
+                    config = self.config_manager.get_config()
+                self.sheet_combobox.set(config['excel_sheet'])                
                 self.update_column_lists()
                 
         except Exception as e:
@@ -396,18 +396,22 @@ class ConfigTab(Frame):
             self.source_folder_entry.delete(0, END)
             self.processed_folder_entry.delete(0, END)
             self.excel_file_entry.delete(0, END)
+            self.sheet_combobox['values'] = ()
+            self.sheet_combobox.set('')
+            self.filter1_frame.clear()
+            self.filter2_frame.clear()
+            self.filter3_frame.clear()
             self.template_entry.delete(0, END)
             
             # Load preset values
             self.source_folder_entry.insert(0, preset_config.get('source_folder', ''))
             self.processed_folder_entry.insert(0, preset_config.get('processed_folder', ''))
             self.excel_file_entry.insert(0, preset_config.get('excel_file', ''))
+            self.update_sheet_list(preset_config)
             self.template_entry.insert(0, preset_config.get('output_template', ''))
-            
-            # Update Excel-related fields
-            if preset_config.get('excel_file'):
-                self.update_sheet_list()
-                self.after(100, self.update_column_lists)
+            self.filter1_frame.set(preset_config.get('filter1_column', ''))
+            self.filter2_frame.set(preset_config.get('filter2_column', ''))
+            self.filter3_frame.set(preset_config.get('filter3_column', '')) 
             
             self.save_config()
             self.show_status_message(f"Loaded preset: {preset_name}")

@@ -56,9 +56,8 @@ class ProcessingQueue:
             self.stop_event = Event()
         except (AttributeError, RuntimeError):
             # Fallback for PyInstaller if Event initialization fails
-            import threading
+            self.stop_event = Event()
 
-            self.stop_event = threading.Event()
         self.config_manager = config_manager
         self.excel_manager = excel_manager
         self.pdf_manager = pdf_manager
@@ -577,19 +576,19 @@ class QueueDisplay(Frame):
 
         # Setup table with more columns
         columns = ("filename", "values", "status", "time")
-        self.table = Treeview(table_frame, columns=columns, show="headings", height=5)
+        self.table = Treeview(table_frame, columns=columns, show="headings")
 
         # Configure headings with sort functionality
-        self.table.heading("filename", text="File")
-        self.table.heading("values", text="Selected Values")
-        self.table.heading("status", text="Status")
-        self.table.heading("time", text="Time")
+        self.table.heading("filename", text="File", anchor="w")
+        self.table.heading("values", text="Selected Values", anchor="w")
+        self.table.heading("status", text="Status", anchor="w")
+        self.table.heading("time", text="Time", anchor="w")
 
-        # Configure column widths and weights
-        self.table.column("filename", width=120, minwidth=80)
-        self.table.column("values", width=150, minwidth=120)
-        self.table.column("status", width=70, minwidth=70)
-        self.table.column("time", width=60, minwidth=60)
+        # Configure column widths - all columns freely resizable
+        self.table.column("filename", width=250, minwidth=50, stretch=False)
+        self.table.column("values", width=250, minwidth=50, stretch=False)
+        self.table.column("status", width=100, minwidth=50, stretch=False)
+        self.table.column("time", width=100, minwidth=50, stretch=False)
 
         # Add vertical scrollbar
         v_scrollbar = Scrollbar(
@@ -614,11 +613,9 @@ class QueueDisplay(Frame):
         self.table.tag_configure("completed", foreground="green")
         self.table.tag_configure("failed", foreground="red")
 
-        # Bind tooltip events
+        # Bind tooltip events and column resize handler
         self.table.bind("<Motion>", self._show_tooltip)
-        self.table.bind(
-            "<Double-1>", self._show_task_details
-        )  # Bind double-click event
+        self.table.bind("<Double-1>", self._show_task_details)
         self._tooltip_label = None
 
         # Create button frame at the bottom
@@ -961,25 +958,21 @@ class ProcessingTab(Frame):
         self.handle_frame.grid(row=0, column=1, sticky="nsew")
         self.handle_frame.grid_propagate(False)
 
+        # Create a separate button for collapsing/expanding
         self.handle_button = Button(
             self.handle_frame,
             text="⋮",  # Vertical dots as handle icon
             style="Handle.TButton",
             command=self._toggle_left_panel,
         )
-        self.handle_button.place(relx=0.5, rely=0.5, anchor="center", relheight=1.0)
+        self.handle_button.place(relx=0.5, rely=0.5, anchor="center", relheight=0.1)
 
-        # Make handle draggable
-        self.handle_button.bind(
-            "<Enter>",
-            lambda e: self.handle_button.configure(cursor="sb_h_double_arrow"),
-        )
-        self.handle_button.bind(
-            "<Leave>", lambda e: self.handle_button.configure(cursor="")
-        )
-        self.handle_button.bind("<Button-1>", self._start_resize)
-        self.handle_button.bind("<B1-Motion>", self._do_resize)
-        self.handle_button.bind("<ButtonRelease-1>", self._end_resize)
+        # Make handle frame draggable for resizing
+        self.handle_frame.bind("<Enter>", lambda e: self.handle_frame.configure(cursor="sb_h_double_arrow"))
+        self.handle_frame.bind("<Leave>", lambda e: self.handle_frame.configure(cursor=""))
+        self.handle_frame.bind("<Button-1>", self._start_resize)
+        self.handle_frame.bind("<B1-Motion>", self._do_resize)
+        self.handle_frame.bind("<ButtonRelease-1>", self._end_resize)
 
         # Center Panel
         self.center_panel = self._create_center_panel(main_container)
@@ -1000,33 +993,39 @@ class ProcessingTab(Frame):
 
     def _start_resize(self, event: TkEvent) -> None:
         """Start resizing the left panel."""
+        if not self.left_panel_visible:
+            return
         self.start_x = event.x_root
         self.start_width = self.left_panel.winfo_width()
         self.resizing = True
         style = Style()
         style.configure("Handle.TFrame", background="#d0d0d0")
+        # Prevent button from interfering with resize
+        self.handle_button.place_forget()
 
     def _do_resize(self, event: TkEvent) -> None:
         """Resize the left panel based on mouse drag."""
-        if self.left_panel_visible and hasattr(self, "resizing") and self.resizing:
-            delta_x = event.x_root - self.start_x
-            new_width = max(
-                200, min(400, self.start_width + delta_x)
-            )  # Limit width between 200 and 400
+        if not hasattr(self, "resizing") or not self.resizing or not self.left_panel_visible:
+            return
+        delta_x = event.x_root - self.start_x
+        new_width = max(200, min(800, self.start_width + delta_x))  # Limit width between 200 and 400
 
-            # Only update if width actually changed
-            if new_width != self.left_panel_width:
-                self.left_panel_width = new_width
-                self.left_panel.configure(width=new_width)
-
-                # Update layout
-                self.update_idletasks()
+        # Only update if width actually changed
+        if new_width != self.left_panel_width:
+            self.left_panel_width = new_width
+            self.left_panel.configure(width=new_width)
+            # Update layout
+            self.update_idletasks()
 
     def _end_resize(self, event: TkEvent) -> None:
         """End the resize operation."""
+        if not hasattr(self, "resizing") or not self.resizing:
+            return
         self.resizing = False
         style = Style()
         style.configure("Handle.TFrame", background="#e0e0e0")
+        # Restore the button after resize
+        self.handle_button.place(relx=0.5, rely=0.5, anchor="center", relheight=0.1)
 
     def _toggle_left_panel(self) -> None:
         """Toggle the visibility of the left panel."""
@@ -1344,8 +1343,7 @@ class ProcessingTab(Frame):
             self.all_values3 = [safe_convert_to_str(x) for x in self.all_values3]
 
             self.filter1_frame.set_values(self.all_values1)
-            self.filter2_frame.set_values(self.all_values2)
-            self.filter3_frame.set_values(self.all_values3)
+
 
         except Exception as e:
             import traceback
@@ -1363,23 +1361,24 @@ class ProcessingTab(Frame):
                 df = self.excel_manager.excel_data
                 # Convert column to string for comparison
                 df[config["filter1_column"]] = df[config["filter1_column"]].astype(str)
-                filtered_df = df[
-                    df[config["filter1_column"]].str.strip() == selected_value
-                ]
+                filtered_df = df[df[config["filter1_column"]].str.strip() == selected_value]
 
-                filtered_values2 = sorted(
-                    filtered_df[config["filter2_column"]].astype(str).tolist()
-                )
+                # Create a mapping of values to their row indices
+                self.filter2_row_map = {}
+                filter2_values = []
+                
+                for _, row in filtered_df.iterrows():
+                    value = str(row[config["filter2_column"]]).strip()
+                    filter2_values.append(value)
+                    self.filter2_row_map[value] = row.name
+                
+                # Set the values in filter2 frame
                 self.filter2_frame.clear()
-                filtered_values2 = [str(x).strip() for x in filtered_values2]
-                self.filter2_frame.set_values(filtered_values2)
+                self.filter2_frame.set_values(sorted(filter2_values))
 
-                filtered_values3 = sorted(
-                    filtered_df[config["filter3_column"]].astype(str).tolist()
-                )
-                filtered_values3 = [str(x).strip() for x in filtered_values3]
+                # Clear filter3 since filter2 was reset
                 self.filter3_frame.clear()
-                self.filter3_frame.set_values(filtered_values3)
+                self.filter3_frame.set_values([])
 
         except Exception as e:
             ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
@@ -1388,29 +1387,23 @@ class ProcessingTab(Frame):
         try:
             config = self.config_manager.get_config()
             if self.excel_manager.excel_data is not None:
-                selected_value1 = str(self.filter1_frame.get()).strip()
-                selected_value2 = str(self.filter2_frame.get()).strip()
+                selected_value = str(self.filter2_frame.get()).strip()
+                if not selected_value or not hasattr(self, 'filter2_row_map'):
+                    self.filter3_frame.clear()
+                    self.filter3_frame.set_values([])
+                    return
 
+                # Get the row index from our mapping
+                excel_row_idx = self.filter2_row_map[selected_value]
+                
+                # Get the exact filter3 value from the specific Excel row
                 df = self.excel_manager.excel_data
-                # Convert columns to string for comparison
-                df[config["filter1_column"]] = df[config["filter1_column"]].astype(str)
-                df[config["filter2_column"]] = df[config["filter2_column"]].astype(str)
-
-                filtered_df = df[
-                    (df[config["filter1_column"]].str.strip() == selected_value1)
-                    & (df[config["filter2_column"]].str.strip() == selected_value2)
-                ]
-
-                filtered_values3 = sorted(
-                    filtered_df[config["filter3_column"]].astype(str).tolist()
-                )
-                filtered_values3 = [str(x).strip() for x in filtered_values3]
+                filter3_value = str(df.loc[excel_row_idx, config["filter3_column"]]).strip()
                 self.filter3_frame.clear()
-                self.filter3_frame.set_values(filtered_values3)
+                self.filter3_frame.set_values([filter3_value])
 
         except Exception as e:
             import traceback
-
             print(f"[DEBUG] Error in on_filter2_select:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
@@ -1477,8 +1470,7 @@ class ProcessingTab(Frame):
 
                 # Reset available values for dependent filters
                 self.filter1_frame.set_values(self.all_values1)
-                self.filter2_frame.set_values(self.all_values2)
-                self.filter3_frame.set_values(self.all_values3)
+
 
                 # Focus the first fuzzy search entry
                 self.filter1_frame.entry.focus_set()
@@ -1515,22 +1507,31 @@ class ProcessingTab(Frame):
             return
 
         try:
-            value1 = self.filter1_frame.get()
-            value2 = self.filter2_frame.get()
-            value3 = self.filter3_frame.get()
+            config = self.config_manager.get_config()
+            selected_value = str(self.filter2_frame.get()).strip()
 
-            if not value1 or not value2 or not value3:
-                self._update_status("Select all filters")
-                return
+
+            # Get the row index from our mapping
+            excel_row_idx = self.filter2_row_map[selected_value]
+            df = self.excel_manager.excel_data
+            row = df.loc[excel_row_idx]
+
+            # Get the actual values from the row
+            value1 = str(row[config["filter1_column"]]).strip()
+            value2 = str(row[config["filter2_column"]]).strip()
+            value3 = str(row[config["filter3_column"]]).strip()
 
             # Create task
             task = PDFTask(
-                pdf_path=self.current_pdf, value1=value1, value2=value2, value3=value3
+                pdf_path=self.current_pdf,
+                value1=value1,
+                value2=value2,
+                value3=value3
             )
 
             # Add to queue display
             self.queue_display.table.insert(
-                "", "end", values=(task.pdf_path, "Pending"), tags=("pending",)
+                "", 0, values=(task.pdf_path, "Pending"), tags=("pending",)
             )
 
             # Add to processing queue
@@ -1546,17 +1547,12 @@ class ProcessingTab(Frame):
             self.filter3_frame.clear()
 
             # Reset available values for dependent filters
-            self.filter2_frame.set_values(self.all_values2)
-            self.filter3_frame.set_values(self.all_values3)
+            self.filter1_frame.set_values(self.all_values1)
 
             # Focus the first fuzzy search entry
             self.filter1_frame.entry.focus_set()
 
         except Exception as e:
-            import traceback
-
-            print(f"[DEBUG] Error in process_current_file:")
-            print(traceback.format_exc())
             self._update_status("Processing error")
             ErrorDialog(self, "Error", str(e))
 
