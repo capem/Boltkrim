@@ -1,16 +1,14 @@
-from tkinter import END, SINGLE, Widget, Event, Listbox, StringVar
-from tkinter.ttk import Frame, Entry, Scrollbar, Style
+from __future__ import annotations
+from tkinter import StringVar, Widget, Listbox, END, SINGLE, Event
+from tkinter.ttk import Frame, Entry, Style, Scrollbar
+from typing import Optional, List, Callable, Any
 from difflib import SequenceMatcher
-from typing import List, Optional, Any, Callable
+
 
 
 class FuzzySearchFrame(Frame):
-    """A modernized frame that provides fuzzy search functionality with a text entry and listbox.
-
-    This widget allows users to search through a list of values using fuzzy matching,
-    displaying the best matches in a scrollable listbox with improved styling and accessibility.
-    """
-
+    """Frame containing a fuzzy search entry and listbox."""
+    
     def __init__(
         self,
         master: Widget,

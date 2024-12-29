@@ -1,9 +1,10 @@
 from pandas import read_excel, ExcelFile, DataFrame, Series
-from win32com.client import Dispatch, pywintypes
+from openpyxl import load_workbook
+from openpyxl.worksheet.hyperlink import Hyperlink
 from shutil import copy2
 from os import path, remove
 from socket import socket, AF_INET, SOCK_STREAM, getdefaulttimeout, setdefaulttimeout, timeout
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Union
 from time import sleep
 from random import uniform
 import pandas as pd
@@ -18,19 +19,28 @@ def is_path_available(filepath: str, timeout: int = 2) -> bool:
     Returns:
         bool: True if path is available, False otherwise
     """
+    print(f"[DEBUG] Checking path availability for: {filepath}")
+    
     if not filepath.startswith('\\\\'): # Not a network path
-        return path.exists(filepath)
+        exists = path.exists(filepath)
+        print(f"[DEBUG] Local path check result: {exists}")
+        return exists
         
     try:
         # Extract server name from UNC path
         server = filepath.split('\\')[2]
+        print(f"[DEBUG] Extracted server name: {server}")
+        
         # Try to connect to the server
+        print(f"[DEBUG] Attempting connection to {server}:445 with {timeout}s timeout")
         sock = socket(AF_INET, SOCK_STREAM)
         sock.settimeout(timeout)
         sock.connect((server, 445))  # 445 is the SMB port
         sock.close()
+        print("[DEBUG] Successfully connected to server")
         return True
-    except:
+    except Exception as e:
+        print(f"[DEBUG] Connection failed: {str(e)}")
         return False
 
 def retry_with_backoff(func, max_attempts: int = 5, initial_delay: float = 1.0):
@@ -48,7 +58,7 @@ def retry_with_backoff(func, max_attempts: int = 5, initial_delay: float = 1.0):
         for attempt in range(max_attempts):
             try:
                 return func(*args, **kwargs)
-            except (pywintypes.com_error, IOError, PermissionError) as e:
+            except (IOError, PermissionError) as e:
                 last_exception = e
                 if attempt == max_attempts - 1:
                     raise
@@ -62,17 +72,51 @@ def retry_with_backoff(func, max_attempts: int = 5, initial_delay: float = 1.0):
     return wrapper
 
 class ExcelManager:
+    """A class to manage Excel file operations with caching and network path handling.
+
+    This class provides functionality to:
+    - Load and cache Excel data
+    - Update PDF hyperlinks in Excel files
+    - Find matching rows based on filter criteria
+    - Handle network paths with timeouts and retries
+    - Manage Excel sheets and columns
+
+    Attributes:
+        excel_data (Optional[DataFrame]): Cached pandas DataFrame containing Excel data
+        _cached_file (Optional[str]): Path to the currently cached Excel file
+        _cached_sheet (Optional[str]): Name of the currently cached sheet
+        _last_modified (Optional[float]): Last modification timestamp of cached file
+        _network_timeout (int): Timeout in seconds for network operations
+        _hyperlink_cache (Dict[int, bool]): Cache of row indices to hyperlink status
+    """
     def __init__(self):
         self.excel_data: Optional[DataFrame] = None
-        self.excel_app = None
         self._cached_file = None
         self._cached_sheet = None
         self._last_modified = None
         self._network_timeout = 5  # 5 seconds timeout for network operations
+        self._hyperlink_cache = {}  # Cache for hyperlink status
         
     @retry_with_backoff
     def load_excel_data(self, excel_file: str, sheet_name: str) -> bool:
-        """Load data from Excel file with caching and retry logic."""
+        """Load data from Excel file with caching and retry logic.
+        
+        This method loads Excel data while implementing:
+        - Network path availability checking
+        - Caching to avoid unnecessary reloads
+        - Retry logic with exponential backoff
+        - Timeout handling for network operations
+        
+        Args:
+            excel_file: Path to the Excel file to load
+            sheet_name: Name of the sheet to load
+            
+        Returns:
+            bool: True if data was loaded successfully
+            
+        Raises:
+            Exception: If network path is unavailable or Excel file cannot be loaded
+        """
         try:
             # Check network path availability first
             if not is_path_available(excel_file):
@@ -80,9 +124,16 @@ class ExcelManager:
                 
             # Check if we need to reload
             try:
-                current_modified = path.getmtime(excel_file) if path.exists(excel_file) else None
-            except OSError:
-                current_modified = None  # Handle network errors for file stat
+                current_modified = path.getmtime(excel_file)
+            except (OSError, PermissionError) as e:
+                print(f"[DEBUG] Failed to get file modification time: {str(e)}")
+                current_modified = None  # Handle network/permission errors for file stat
+                # Force reload since we can't verify modification time
+                self.excel_data = None
+                self._cached_file = None
+                self._cached_sheet = None
+                self._last_modified = None
+                self._hyperlink_cache = {}
             
             if (self.excel_data is not None and 
                 self._cached_file == excel_file and 
@@ -98,6 +149,10 @@ class ExcelManager:
                     excel_file,
                     sheet_name=sheet_name
                 )
+                
+                # Clear existing cache
+                self._hyperlink_cache = {}
+                
             finally:
                 setdefaulttimeout(original_timeout)
             
@@ -112,9 +167,50 @@ class ExcelManager:
                 raise Exception("Network timeout while accessing Excel file")
             raise Exception(f"Error loading Excel data: {str(e)}")
     
+    def cache_hyperlinks_for_column(self, excel_file: str, sheet_name: str, column_name: str) -> None:
+        """Cache hyperlink information for a specific column.
+        
+        Args:
+            excel_file: Path to the Excel file
+            sheet_name: Name of the sheet
+            column_name: Name of the column to check for hyperlinks
+        """
+        if not self.excel_data is not None:
+            return
+
+        print(f"[DEBUG] Loading hyperlink information for column {column_name}")
+        wb = load_workbook(excel_file, data_only=True)
+        ws = wb[sheet_name]
+        df_cols = read_excel(excel_file, sheet_name=sheet_name, nrows=0)
+        
+        # Find the target column
+        if column_name not in df_cols.columns:
+            wb.close()
+            return
+            
+        target_col = df_cols.columns.get_loc(column_name) + 1
+        
+        # Clear existing cache
+        self._hyperlink_cache = {}
+        
+        # Cache hyperlink information only for the target column
+        for idx in range(len(self.excel_data)):
+            cell = ws.cell(row=idx + 2, column=target_col)  # +2 for header and 1-based indexing
+            self._hyperlink_cache[idx] = cell.hyperlink is not None
+        
+        wb.close()
+        print(f"[DEBUG] Hyperlink information cached for column {column_name}")
+    
     @retry_with_backoff
-    def update_pdf_link(self, excel_file: str, sheet_name: str, row_idx: int, pdf_path: str, filter2_col: str, force: bool = False) -> Tuple[bool, bool]:
-        """Update Excel with PDF link. 
+    def update_pdf_link(self, excel_file: str, sheet_name: str, row_idx: int, pdf_path: str, filter2_col: str) -> Tuple[bool, bool]:
+        """Update Excel with PDF link.
+        
+        This method updates an Excel cell with a hyperlink to a PDF file while:
+        - Preserving existing cell values
+        - Creating backups before modifications
+        - Handling network paths
+        - Using relative paths for links
+        - Implementing retry logic
         
         Args:
             excel_file: Path to the Excel file
@@ -122,18 +218,21 @@ class ExcelManager:
             row_idx: Row index to update (0-based)
             pdf_path: Path to the PDF file
             filter2_col: Column name for the hyperlink
-            force: Whether to force update even if hyperlink exists
             
         Returns:
             Tuple[bool, bool]: (success, had_existing_link)
-            - success: True if update was successful, False if file was locked
+            - success: True if update was successful
             - had_existing_link: True if there was an existing hyperlink
-        """
-        if not path.exists(excel_file):
-            raise FileNotFoundError(f"Excel file not found: {excel_file}")
             
-        if not path.exists(pdf_path):
-            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+        Raises:
+            FileNotFoundError: If Excel or PDF file is not found
+            Exception: If update fails for any other reason
+        """
+        if not is_path_available(excel_file):
+            raise FileNotFoundError(f"Excel file not found or not accessible: {excel_file}")
+            
+        if not is_path_available(pdf_path):
+            raise FileNotFoundError(f"PDF file not found or not accessible: {pdf_path}")
             
         print(f"[DEBUG] Updating Excel link in {sheet_name}, row {row_idx + 2}, column {filter2_col}")
         
@@ -141,123 +240,89 @@ class ExcelManager:
         backup_created = False
         
         try:
-            # Initialize Excel application
-            if self.excel_app is None:
-                print("[DEBUG] Initializing Excel application")
-                self.excel_app = Dispatch("Excel.Application")
-                self.excel_app.Visible = False
-                self.excel_app.DisplayAlerts = False
+            # Load workbook with openpyxl
+            print("[DEBUG] Opening workbook")
+            wb = load_workbook(excel_file, read_only=False, data_only=True)
             
-            try:
-                # Open the workbook with read/write access
-                print("[DEBUG] Opening workbook")
-                wb = self.excel_app.Workbooks.Open(
-                    excel_file,
-                    UpdateLinks=False,
-                    ReadOnly=not force  # Only open in write mode if we're going to update
-                )
-                print("[DEBUG] Getting worksheet")
-                ws = wb.Worksheets(sheet_name)
+            if sheet_name not in wb.sheetnames:
+                raise Exception(f"Sheet {sheet_name} not found in Excel file")
                 
-                # Find the target column for the PDF link
-                print("[DEBUG] Finding target column")
-                target_col = None
-                for col in range(1, ws.UsedRange.Columns.Count + 1):
-                    header_value = ws.Cells(1, col).Value
-                    print(f"[DEBUG] Column {col} header: {header_value}")
-                    if header_value == filter2_col:
-                        target_col = col
-                        break
+            print("[DEBUG] Getting worksheet")
+            ws = wb[sheet_name]
+            
+            # Find the target column for the PDF link using pandas
+            print("[DEBUG] Finding target column")
+            df = pd.read_excel(excel_file, sheet_name=sheet_name, nrows=0)
+            print("[DEBUG] All columns in Excel:", list(df.columns))
+            print("[DEBUG] Looking for column:", repr(filter2_col))
+            print("[DEBUG] Case-sensitive comparison results:", [col == filter2_col for col in df.columns])
+            print("[DEBUG] Case-insensitive comparison results:", [col.upper() == filter2_col.upper() for col in df.columns])
+            if filter2_col not in df.columns:
+                raise Exception(f"Column {filter2_col} not found in Excel sheet. Available columns: {list(df.columns)}")
+            
+            # Convert pandas column index to openpyxl column number (1-based)
+            target_col = df.columns.get_loc(filter2_col) + 1
+            
+            print(f"[DEBUG] Target column found at position {target_col}")
+            
+            # Get the cell and check for existing hyperlink
+            print(f"[DEBUG] Accessing cell at row {row_idx + 2}, column {target_col}")
+            cell = ws.cell(row=row_idx + 2, column=target_col)
+            original_value = cell.value
+            print(f"[DEBUG] Original cell value: {original_value}")
+            
+            # Check for existing hyperlink
+            has_existing_link = cell.hyperlink is not None
+            
+            # Create backup before modifying the file
+            backup_file = excel_file + '.bak'
+            print("[DEBUG] Creating backup file")
+            copy2(excel_file, backup_file)
+            backup_created = True
+            
+            # Create relative path for Excel link
+            rel_path = path.relpath(
+                pdf_path,  # Use the path directly since it's already sanitized by PDFManager
+                path.dirname(excel_file)
+            )
+            print(f"[DEBUG] Created relative path: {rel_path}")
+            
+            # Remove existing hyperlink if any
+            if has_existing_link:
+                print("[DEBUG] Removing existing hyperlink")
+                cell.hyperlink = None
+            
+            # Add new hyperlink while preserving the cell value
+            print("[DEBUG] Adding new hyperlink")
+            cell.hyperlink = Hyperlink(
+                ref=cell.coordinate,
+                target=rel_path,
+                display=original_value or path.basename(pdf_path)
+            )
+            cell.value = original_value or path.basename(pdf_path)
+            
+            # Save and close
+            print("[DEBUG] Saving workbook")
+            wb.save(excel_file)
+            wb.close()
+            wb = None
+            
+            # Delete backup if everything succeeded
+            if backup_created and path.exists(backup_file):
+                print("[DEBUG] Removing backup file")
+                remove(backup_file)
                 
-                if target_col is None:
-                    raise Exception(f"Column {filter2_col} not found in Excel sheet")
+            print("[DEBUG] Excel update completed successfully")
+            
+            return True, has_existing_link
                 
-                print(f"[DEBUG] Target column found at position {target_col}")
-                
-                # Get the cell and check for existing hyperlink
-                print(f"[DEBUG] Accessing cell at row {row_idx + 2}, column {target_col}")
-                cell = ws.Cells(row_idx + 2, target_col)
-                original_value = cell.Value
-                print(f"[DEBUG] Original cell value: {original_value}")
-                
-                # Check for existing hyperlink
-                has_existing_link = False
-                try:
-                    has_existing_link = cell.Hyperlinks.Count > 0
-                    if has_existing_link and not force:
-                        # Close workbook without saving and return
-                        wb.Close(SaveChanges=False)
-                        wb = None
-                        return True, True  # File accessible but has existing link
-                except Exception as e:
-                    print(f"[DEBUG] Error checking hyperlink: {str(e)}")
-                
-                if force or not has_existing_link:
-                    # Create backup only if we're going to modify the file
-                    backup_file = excel_file + '.bak'
-                    print("[DEBUG] Creating backup file")
-                    copy2(excel_file, backup_file)
-                    backup_created = True
-                    
-                    # Create relative path for Excel link
-                    rel_path = path.relpath(
-                        pdf_path,  # Use the path directly since it's already sanitized by PDFManager
-                        path.dirname(excel_file)
-                    )
-                    print(f"[DEBUG] Created relative path: {rel_path}")
-                    
-                    # Remove existing hyperlink if any
-                    try:
-                        if has_existing_link:
-                            print("[DEBUG] Removing existing hyperlink")
-                            cell.Hyperlinks.Delete()
-                    except Exception as e:
-                        print(f"[DEBUG] Error removing hyperlink: {str(e)}")
-                    
-                    # Add new hyperlink while preserving the cell value
-                    print("[DEBUG] Adding new hyperlink")
-                    ws.Hyperlinks.Add(
-                        Anchor=cell,
-                        Address=rel_path,
-                        TextToDisplay=original_value or path.basename(pdf_path)
-                    )
-                    
-                    # Save and close
-                    print("[DEBUG] Saving workbook")
-                    wb.Save()
-                    print("[DEBUG] Closing workbook")
-                    wb.Close(SaveChanges=True)
-                    wb = None
-                    
-                    # Delete backup if everything succeeded
-                    if backup_created and path.exists(backup_file):
-                        print("[DEBUG] Removing backup file")
-                        remove(backup_file)
-                        
-                    print("[DEBUG] Excel update completed successfully")
-                    
-                return True, has_existing_link
-                    
-            except pywintypes.com_error as e:
-                print(f"[DEBUG] COM error: {str(e)}")
-                # Handle specific COM errors
-                if e.hresult == -2147352567:  # File is locked for editing
-                    print("[DEBUG] Excel file is locked for editing")
-                    return False, False  # Return False to indicate file was locked
-                elif e.hresult == -2147417848:  # Excel automation server error
-                    if self.excel_app:
-                        print("[DEBUG] Excel automation error, quitting Excel")
-                        self.excel_app.Quit()
-                        self.excel_app = None
-                raise
-                    
         except Exception as e:
             print(f"[DEBUG] Error in update_pdf_link: {str(e)}")
             # Restore from backup if something went wrong
             if wb:
                 try:
                     print("[DEBUG] Closing workbook without saving due to error")
-                    wb.Close(SaveChanges=False)
+                    wb.close()
                 except:
                     pass
                     
@@ -274,7 +339,7 @@ class ExcelManager:
             if wb:
                 try:
                     print("[DEBUG] Cleanup: Closing workbook")
-                    wb.Close(SaveChanges=False)
+                    wb.close()
                 except:
                     pass
                     
@@ -284,7 +349,7 @@ class ExcelManager:
                     remove(backup_file)
                 except:
                     pass
-            
+
     def get_sheet_names(self, excel_file: str) -> List[str]:
         """Get list of sheet names from Excel file."""
         try:
@@ -393,10 +458,13 @@ class ExcelManager:
             
         return df[mask].iloc[0], mask.idxmax()
 
-    def __del__(self) -> None:
-        """Cleanup Excel application on object destruction"""
-        if self.excel_app:
-            try:
-                self.excel_app.Quit()
-            except:
-                pass
+    def has_hyperlink(self, row_idx: int) -> bool:
+        """Check if a row has any hyperlinks.
+        
+        Args:
+            row_idx: The 0-based row index to check
+            
+        Returns:
+            bool: True if the row has any hyperlinks, False otherwise
+        """
+        return self._hyperlink_cache.get(row_idx, False)

@@ -4,10 +4,6 @@ from tkinter import (
     END,
     Event as TkEvent,
     Widget,
-    ttk,
-    StringVar,
-    NSEW,
-    PhotoImage,
     Toplevel,
     Frame as TkFrame,
 )
@@ -19,7 +15,6 @@ from tkinter.ttk import (
     Style,
     LabelFrame,
     Treeview,
-    Notebook,
 )
 from PIL.ImageTk import PhotoImage as PILPhotoImage
 from os import path
@@ -28,11 +23,10 @@ from threading import Thread, Lock, Event
 from dataclasses import dataclass
 from .fuzzy_search import FuzzySearchFrame
 from .error_dialog import ErrorDialog
-import pythoncom
 from datetime import datetime
 import pandas as pd
-from tkinter.messagebox import showerror, askyesno
-import win32com.client
+from openpyxl import load_workbook
+from ..utils import ConfigManager, ExcelManager, PDFManager
 
 
 # Data Models
@@ -44,11 +38,12 @@ class PDFTask:
     value3: str
     status: str = "pending"  # pending, processing, failed, completed
     error_msg: str = ""
+    row_idx: int = -1  # Add row index field
 
 
 # Queue Management
 class ProcessingQueue:
-    def __init__(self, config_manager: Any, excel_manager: Any, pdf_manager: Any):
+    def __init__(self, config_manager: ConfigManager, excel_manager: ExcelManager, pdf_manager: PDFManager):
         self.tasks: Dict[str, PDFTask] = {}
         self.lock = Lock()
         self.processing_thread: Optional[Thread] = None
@@ -111,7 +106,6 @@ class ProcessingQueue:
     def _process_queue(self) -> None:
         while not self.stop_event.is_set():
             task_to_process = None
-            excel_app = None
 
             with self.lock:
                 for task in self.tasks.values():
@@ -126,149 +120,75 @@ class ProcessingQueue:
                 continue
 
             try:
-                pythoncom.CoInitialize()
                 config = self.config_manager.get_config()
                 excel_manager = type(self.excel_manager)()
 
-                try:
-                    # Initialize Excel in hidden mode
-                    excel_app = win32com.client.Dispatch("Excel.Application")
-                    excel_app.Visible = False
-                    excel_app.DisplayAlerts = False
+                # Load Excel data and find matching row - ExcelManager handles its own errors
+                excel_manager.load_excel_data(
+                    config["excel_file"], config["excel_sheet"]
+                )
+                row_data, _ = excel_manager.find_matching_row(
+                    config["filter1_column"],
+                    config["filter2_column"],
+                    config["filter3_column"],
+                    task_to_process.value1,
+                    task_to_process.value2,
+                    task_to_process.value3,
+                )
 
-                    excel_manager.load_excel_data(
-                        config["excel_file"], config["excel_sheet"]
-                    )
-                except Exception as e:
-                    raise Exception(f"Failed to load Excel data: {str(e)}")
+                # Define date formats as a constant
+                DATE_FORMATS = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d"]
 
-                try:
-                    row_data, row_idx = excel_manager.find_matching_row(
-                        config["filter1_column"],
-                        config["filter2_column"],
-                        config["filter3_column"],
-                        task_to_process.value1,
-                        task_to_process.value2,
-                        task_to_process.value3,
-                    )
-                except Exception as e:
-                    raise Exception(f"Failed to find matching row: {str(e)}")
-
-                if row_data is None:
-                    raise Exception("Selected combination not found in Excel sheet")
-
-                # Prepare template data with consistent field names
+                # Process all columns in one pass
                 template_data = {
+                    # Add generic filter names first
                     "filter1": row_data[config["filter1_column"]],
                     "filter2": row_data[config["filter2_column"]],
-                    "filter_1": row_data[
-                        config["filter1_column"]
-                    ],  # For backward compatibility
-                    "filter_2": row_data[
-                        config["filter2_column"]
-                    ],  # For backward compatibility
-                    config["filter1_column"]: row_data[
-                        config["filter1_column"]
-                    ],  # Direct column access
-                    config["filter2_column"]: row_data[
-                        config["filter2_column"]
-                    ],  # Direct column access
-                    config["filter3_column"]: row_data[
-                        config["filter3_column"]
-                    ],  # Direct column access
+                    "filter3": row_data[config["filter3_column"]],
                 }
 
-                # Handle date fields generically
-                for col in row_data.index:
-                    if isinstance(row_data[col], datetime):
-                        template_data[col] = row_data[col]
-                    elif "DATE" in col.upper() or "DT" in col.upper():
-                        # Try to parse potential date fields
+                # Process all columns in one pass
+                for column in row_data.index:
+                    value = row_data[column]
+                    template_data[column] = value
+                    
+                    if "DATE" not in column.upper() or pd.isnull(value):
+                        continue
+
+                    if isinstance(value, datetime):
+                        continue
+                            
+                    for date_format in DATE_FORMATS:
                         try:
-                            if pd.notnull(row_data[col]):
-                                for date_format in [
-                                    "%Y-%m-%d",
-                                    "%d/%m/%Y",
-                                    "%d-%m-%Y",
-                                    "%Y/%m/%d",
-                                ]:
-                                    try:
-                                        template_data[col] = datetime.strptime(
-                                            str(row_data[col]), date_format
-                                        )
-                                        break
-                                    except ValueError:
-                                        continue
-                        except Exception as e:
-                            print(
-                                f"[DEBUG] Failed to parse date in column {col}: {str(e)}"
-                            )
-                            # Don't raise an error, just keep the original value
-                            template_data[col] = row_data[col]
-                    else:
-                        # Copy non-date fields as is
-                        template_data[col] = row_data[col]
-
-                try:
-                    # Add processed_folder to template data
-                    template_data["processed_folder"] = config["processed_folder"]
-
-                    # Generate new filepath using template
-                    processed_path = self.pdf_manager.generate_output_path(
-                        config["output_template"], template_data
-                    )
-
-                    # Move file to processed location first
-                    if not self.pdf_manager.process_pdf(
-                        task_to_process.pdf_path,
-                        template_data,
-                        config["processed_folder"],
-                        config["output_template"],
-                    ):
-                        raise Exception("PDF processing failed")
-
-                    # Setup retry parameters for Excel operations
-                    max_retries = 3
-                    retry_delay = 1  # seconds
-
-                    for retry in range(max_retries):
-                        try:
-                            # Now update Excel with the new path
-                            success, has_existing_link = excel_manager.update_pdf_link(
-                                config["excel_file"],
-                                config["excel_sheet"],
-                                row_idx,
-                                processed_path,  # Use the processed_path directly
-                                config["filter2_column"],
-                                force=True,  # Always force since we've already moved the file
-                            )
-
-                            if not success:
-                                if retry < max_retries - 1:
-                                    print(f"[DEBUG] Retry {retry + 1} updating Excel")
-                                    import time
-
-                                    time.sleep(retry_delay)
-                                    continue
-                                else:
-                                    raise Exception(
-                                        f"Failed to update Excel after {max_retries} retries"
-                                    )
+                            template_data[column] = datetime.strptime(str(value), date_format)
                             break
+                        except ValueError:
+                            continue
                         except Exception as e:
-                            if retry < max_retries - 1:
-                                print(
-                                    f"[DEBUG] Retry {retry + 1} updating Excel: {str(e)}"
-                                )
-                                import time
+                            print(f"[DEBUG] Failed to parse date in column {column}: {str(e)}")
+                            break
 
-                                time.sleep(retry_delay)
-                            else:
-                                raise Exception(
-                                    f"Failed to update Excel after {max_retries} retries: {str(e)}"
-                                )
-                except Exception as e:
-                    raise Exception(f"Failed to process PDF or update Excel: {str(e)}")
+                # Add processed_folder to template data and process PDF
+                template_data["processed_folder"] = config["processed_folder"]
+                processed_path = self.pdf_manager.generate_output_path(
+                    config["output_template"], template_data
+                )
+
+                self.pdf_manager.process_pdf(
+                    task_to_process.pdf_path,
+                    template_data,
+                    config["processed_folder"],
+                    config["output_template"],
+                )
+
+                # Update Excel with the new path using the stored row index
+                excel_manager.update_pdf_link(
+                    config["excel_file"],
+                    config["excel_sheet"],
+                    task_to_process.row_idx,  # Use the stored row index
+                    processed_path,
+                    config["filter2_column"],
+                )
 
                 with self.lock:
                     task_to_process.status = "completed"
@@ -281,18 +201,6 @@ class ProcessingQueue:
                     self._notify_status_change()
                 print(f"[DEBUG] Task failed: {str(e)}")
             finally:
-                # Clean up Excel application
-                if excel_app is not None:
-                    try:
-                        excel_app.Quit()
-                    except Exception as e:
-                        print(f"[DEBUG] Error quitting Excel: {str(e)}")
-
-                try:
-                    pythoncom.CoUninitialize()
-                except Exception as e:
-                    print(f"[DEBUG] Error uninitializing COM: {str(e)}")
-
                 # If task is still in processing state, mark it as failed
                 with self.lock:
                     if task_to_process and task_to_process.status == "processing":
@@ -568,37 +476,75 @@ class QueueDisplay(Frame):
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0)  # For buttons
 
-        # Create a frame for the table and scrollbar
-        table_frame = Frame(self)
+        # Create a frame for the table and scrollbar with a light background
+        table_frame = Frame(self, style="Card.TFrame")
         table_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         table_frame.grid_columnconfigure(0, weight=1)
         table_frame.grid_rowconfigure(0, weight=1)
 
-        # Setup table with more columns
+        # Setup table with more informative columns
         columns = ("filename", "values", "status", "time")
-        self.table = Treeview(table_frame, columns=columns, show="headings")
+        self.table = Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",  # Single selection mode
+            style="Queue.Treeview"
+        )
 
-        # Configure headings with sort functionality
-        self.table.heading("filename", text="File", anchor="w")
-        self.table.heading("values", text="Selected Values", anchor="w")
-        self.table.heading("status", text="Status", anchor="w")
-        self.table.heading("time", text="Time", anchor="w")
+        # Configure modern style for the treeview
+        style = Style()
+        style.configure(
+            "Queue.Treeview",
+            background="#ffffff",
+            foreground="#333333",
+            rowheight=30,
+            fieldbackground="#ffffff",
+            borderwidth=0,
+            font=("Segoe UI", 9)
+        )
+        style.configure(
+            "Queue.Treeview.Heading",
+            background="#f0f0f0",
+            foreground="#333333",
+            relief="flat",
+            font=("Segoe UI", 9, "bold")
+        )
+        style.map(
+            "Queue.Treeview",
+            background=[("selected", "#e7f3ff")],
+            foreground=[("selected", "#000000")]
+        )
 
-        # Configure column widths - all columns freely resizable
-        self.table.column("filename", width=250, minwidth=50, stretch=False)
-        self.table.column("values", width=250, minwidth=50, stretch=False)
-        self.table.column("status", width=100, minwidth=50, stretch=False)
-        self.table.column("time", width=100, minwidth=50, stretch=False)
+        # Configure headings with sort functionality and modern look
+        self.table.heading("filename", text="File", anchor="w", command=lambda: self._sort_column("filename"))
+        self.table.heading("values", text="Selected Values", anchor="w", command=lambda: self._sort_column("values"))
+        self.table.heading("status", text="Status", anchor="w", command=lambda: self._sort_column("status"))
+        self.table.heading("time", text="Time", anchor="w", command=lambda: self._sort_column("time"))
 
-        # Add vertical scrollbar
+        # Configure column properties
+        self.table.column("filename", width=250, minwidth=150, stretch=True)
+        self.table.column("values", width=250, minwidth=150, stretch=True)
+        self.table.column("status", width=100, minwidth=80, stretch=False)
+        self.table.column("time", width=80, minwidth=80, stretch=False)
+
+        # Add modern-looking scrollbars
+        style.configure("Queue.Vertical.TScrollbar", background="#ffffff", troughcolor="#f0f0f0", width=10)
+        style.configure("Queue.Horizontal.TScrollbar", background="#ffffff", troughcolor="#f0f0f0", width=10)
+
         v_scrollbar = Scrollbar(
-            table_frame, orient="vertical", command=self.table.yview
+            table_frame,
+            orient="vertical",
+            command=self.table.yview,
+            style="Queue.Vertical.TScrollbar"
         )
         self.table.configure(yscrollcommand=v_scrollbar.set)
 
-        # Add horizontal scrollbar
         h_scrollbar = Scrollbar(
-            table_frame, orient="horizontal", command=self.table.xview
+            table_frame,
+            orient="horizontal",
+            command=self.table.xview,
+            style="Queue.Horizontal.TScrollbar"
         )
         self.table.configure(xscrollcommand=h_scrollbar.set)
 
@@ -607,103 +553,62 @@ class QueueDisplay(Frame):
         v_scrollbar.grid(row=0, column=1, sticky="ns")
         h_scrollbar.grid(row=1, column=0, sticky="ew")
 
-        # Configure status colors and tooltips
-        self.table.tag_configure("pending", foreground="black")
-        self.table.tag_configure("processing", foreground="blue")
-        self.table.tag_configure("completed", foreground="green")
-        self.table.tag_configure("failed", foreground="red")
+        # Configure status colors
+        self.table.tag_configure("pending", foreground="#666666")
+        self.table.tag_configure("processing", foreground="#007bff")
+        self.table.tag_configure("completed", foreground="#28a745")
+        self.table.tag_configure("failed", foreground="#dc3545")
 
-        # Bind tooltip events and column resize handler
-        self.table.bind("<Motion>", self._show_tooltip)
+        # Add status icons
+        self.status_icons = {
+            "pending": "⋯",  # Three dots
+            "processing": "↻",  # Rotating arrow
+            "completed": "✓",  # Checkmark
+            "failed": "✗"  # X mark
+        }
+
+        # Bind events for interactivity
         self.table.bind("<Double-1>", self._show_task_details)
-        self._tooltip_label = None
+        self.table.bind("<Return>", self._show_task_details)
 
-        # Create button frame at the bottom
-        btn_frame = Frame(self)
-        btn_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 5))
-        btn_frame.grid_columnconfigure(0, weight=1)
-        btn_frame.grid_columnconfigure(1, weight=1)
+    def _sort_column(self, column: str) -> None:
+        """Sort treeview column."""
+        # Get all items in the treeview
+        items = [(self.table.set(item, column), item) for item in self.table.get_children("")]
+        
+        # Check if we're reversing the sort
+        reverse = False
+        if hasattr(self, "_last_sort") and self._last_sort == (column, False):
+            reverse = True
+        
+        # Store the sort state
+        self._last_sort = (column, reverse)
+        
+        # Sort the items
+        items.sort(reverse=reverse)
+        
+        # Rearrange items in sorted positions
+        for index, (_, item) in enumerate(items):
+            self.table.move(item, "", index)
 
-        # Style for modern looking buttons
-        style = Style()
-        style.configure("Action.TButton", padding=5)
+        # Update the heading to show sort direction
+        for col in self.table["columns"]:
+            if col == column:
+                self.table.heading(col, text=f"{self.table.heading(col)['text']} {'↓' if reverse else '↑'}")
+            else:
+                # Remove sort indicator from other columns
+                self.table.heading(col, text=self.table.heading(col)['text'].split(' ')[0])
 
-        # Add buttons with equal width and spacing
-        self.clear_btn = Button(
-            btn_frame,
-            text="Clear Completed",
-            style="Action.TButton",
-            width=20,  # Reduced from 15
-        )
-        self.clear_btn.grid(row=0, column=0, padx=(0, 2), sticky="e")
-
-        self.retry_btn = Button(
-            btn_frame,
-            text="Retry Failed",
-            style="Action.TButton",
-            width=20,  # Reduced from 15
-        )
-        self.retry_btn.grid(row=0, column=1, padx=(2, 0), sticky="w")
-
-    def _show_tooltip(self, event) -> None:
-        """Show tooltip with full path when hovering over truncated filename."""
-        # Get the item under cursor
-        item = self.table.identify_row(event.y)
-        if not item:
-            self._hide_tooltip()
-            return
-
-        # Get the column under cursor
-        column = self.table.identify_column(event.x)
-        if column != "#1":  # Only show tooltip for filename column
-            self._hide_tooltip()
-            return
-
-        # Get full path from the item
-        values = self.table.item(item)["values"]
-        if not values:
-            self._hide_tooltip()
-            return
-
-        full_path = values[0]
-        displayed_text = self.table.item(item, "text")
-
-        # Only show tooltip if text is truncated
-        cell_box = self.table.bbox(item, column)
-        if not cell_box:
-            self._hide_tooltip()
-            return
-
-        if self._tooltip_label is None:
-            self._tooltip_label = Label(
-                self,
-                text=full_path,
-                background="#ffffe0",
-                relief="solid",
-                borderwidth=1,
-            )
-
-        # Position tooltip below the cell
-        x = self.table.winfo_rootx() + cell_box[0]
-        y = self.table.winfo_rooty() + cell_box[1] + cell_box[3]
-        self._tooltip_label.place(x=x, y=y)
-
-    def _hide_tooltip(self) -> None:
-        """Hide the tooltip."""
-        if self._tooltip_label:
-            self._tooltip_label.place_forget()
-
-    def _get_truncated_path(self, path_str: str, max_length: int = 30) -> str:
-        """Truncate path while keeping filename."""
-        filename = path.basename(path_str)
-        if len(filename) <= max_length:
-            return filename
-
-        # If filename is too long, truncate the middle
-        half = (max_length - 3) // 2
-        return f"{filename[:half]}...{filename[-half:]}"
+    def _format_values_display(self, values_str: str) -> str:
+        """Format the values string for better readability."""
+        if not values_str or " | " not in values_str:
+            return values_str
+        
+        parts = values_str.split(" | ")
+        return " → ".join(parts)  # Using arrow for better visual flow
 
     def update_display(self, tasks: Dict[str, PDFTask]) -> None:
+        """Update the queue display with current tasks."""
         selection = self.table.selection()
         selected_paths = [self.table.item(item)["values"][0] for item in selection]
 
@@ -713,47 +618,42 @@ class QueueDisplay(Frame):
             current_items[path_value] = item
 
         for task_path, task in tasks.items():
-            # Format the values string
-            values_str = f"{task.value1} | {task.value2} | {task.value3}"
+            # Format the values string for better readability
+            values_str = self._format_values_display(f"{task.value1} | {task.value2} | {task.value3}")
 
             # Get current time for processing tasks
-            time_str = (
-                datetime.now().strftime("%H:%M:%S")
-                if task.status == "processing"
-                else ""
-            )
+            time_str = datetime.now().strftime("%H:%M:%S") if task.status == "processing" else ""
+
+            # Add status icon to status text
+            status_display = f"{self.status_icons[task.status]} {task.status.capitalize()}"
 
             # Create display values
             display_values = (
-                task_path,  # Store full path for tooltip
+                path.basename(task_path),  # Show only filename in table
                 values_str,
-                task.status.capitalize(),
+                status_display,
                 time_str,
             )
 
             if task_path in current_items:
-                # Update all columns with new values
-                for idx, col in enumerate(["filename", "values", "status", "time"]):
-                    self.table.set(
-                        current_items[task_path], column=col, value=display_values[idx]
-                    )
-                self.table.item(
-                    current_items[task_path],
-                    text=self._get_truncated_path(task_path),
-                    tags=(task.status,),
-                )
+                # Update existing item
+                item_id = current_items[task_path]
+                for idx, value in enumerate(display_values):
+                    self.table.set(item_id, column=idx, value=value)
+                self.table.item(item_id, tags=(task.status,))
                 current_items.pop(task_path)
             else:
+                # Insert new item
                 item = self.table.insert(
                     "",
-                    "end",
-                    text=self._get_truncated_path(task_path),
+                    0,
                     values=display_values,
                     tags=(task.status,),
                 )
                 if task_path in selected_paths:
                     self.table.selection_add(item)
 
+        # Remove items that no longer exist
         for item_id in current_items.values():
             self.table.delete(item_id)
 
@@ -844,11 +744,11 @@ class ProcessingTab(Frame):
     def __init__(
         self,
         master: Widget,
-        config_manager: Any,
-        excel_manager: Any,
-        pdf_manager: Any,
+        config_manager: ConfigManager,
+        excel_manager: ExcelManager,
+        pdf_manager: PDFManager,
         error_handler: Callable[[Exception, str], None],
-        status_handler: Callable[[str], None],
+        status_handler: Callable[[str], None]
     ) -> None:
         super().__init__(master)
         self.master = master
@@ -876,9 +776,6 @@ class ProcessingTab(Frame):
         """Load initial data asynchronously after window is shown."""
         try:
             config = self.config_manager.get_config()
-            if config["excel_file"] and config["excel_sheet"]:
-                self.load_excel_data()
-
             if config["source_folder"]:
                 self.load_next_pdf()
 
@@ -889,6 +786,9 @@ class ProcessingTab(Frame):
     def on_config_change(self) -> None:
         """Handle configuration changes."""
         self._update_status("Loading...")
+        self.filter1_frame.clear()
+        self.filter2_frame.clear()
+        self.filter3_frame.clear()
         self.after(100, self.load_initial_data)
 
     def _setup_styles(self) -> None:
@@ -968,8 +868,12 @@ class ProcessingTab(Frame):
         self.handle_button.place(relx=0.5, rely=0.5, anchor="center", relheight=0.1)
 
         # Make handle frame draggable for resizing
-        self.handle_frame.bind("<Enter>", lambda e: self.handle_frame.configure(cursor="sb_h_double_arrow"))
-        self.handle_frame.bind("<Leave>", lambda e: self.handle_frame.configure(cursor=""))
+        self.handle_frame.bind(
+            "<Enter>", lambda e: self.handle_frame.configure(cursor="sb_h_double_arrow")
+        )
+        self.handle_frame.bind(
+            "<Leave>", lambda e: self.handle_frame.configure(cursor="")
+        )
         self.handle_frame.bind("<Button-1>", self._start_resize)
         self.handle_frame.bind("<B1-Motion>", self._do_resize)
         self.handle_frame.bind("<ButtonRelease-1>", self._end_resize)
@@ -1005,10 +909,16 @@ class ProcessingTab(Frame):
 
     def _do_resize(self, event: TkEvent) -> None:
         """Resize the left panel based on mouse drag."""
-        if not hasattr(self, "resizing") or not self.resizing or not self.left_panel_visible:
+        if (
+            not hasattr(self, "resizing")
+            or not self.resizing
+            or not self.left_panel_visible
+        ):
             return
         delta_x = event.x_root - self.start_x
-        new_width = max(200, min(800, self.start_width + delta_x))  # Limit width between 200 and 400
+        new_width = max(
+            200, min(800, self.start_width + delta_x)
+        )  # Limit width between 200 and 400
 
         # Only update if width actually changed
         if new_width != self.left_panel_width:
@@ -1295,7 +1205,7 @@ class ProcessingTab(Frame):
             self.pdf_viewer.display_pdf(self.current_pdf)
             self.update_queue_display()
 
-    def load_excel_data(self) -> None:
+    def reload_excel_data_and_update_ui(self) -> None:
         try:
             config = self.config_manager.get_config()
             if not all(
@@ -1312,6 +1222,13 @@ class ProcessingTab(Frame):
 
             self.excel_manager.load_excel_data(
                 config["excel_file"], config["excel_sheet"]
+            )
+
+            # Cache hyperlinks for filter2 column only
+            self.excel_manager.cache_hyperlinks_for_column(
+                config["excel_file"],
+                config["excel_sheet"],
+                config["filter2_column"]
             )
 
             self.filter1_label["text"] = config["filter1_column"]
@@ -1344,13 +1261,30 @@ class ProcessingTab(Frame):
 
             self.filter1_frame.set_values(self.all_values1)
 
-
         except Exception as e:
             import traceback
-
-            print(f"[DEBUG] Error in load_excel_data:")
+            print(f"[DEBUG] Error in reload_excel_data_and_update_ui:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}")
+
+    def _format_filter2_value(self, value: str, row_idx: int, has_hyperlink: bool = False) -> str:
+        """Format filter2 value with row number and checkmark if hyperlinked."""
+        prefix = "✓ " if has_hyperlink else ""
+        return f"{prefix}{value} ⟨Excel Row: {row_idx + 2}⟩"  # +2 because Excel is 1-based and has header
+
+    def _parse_filter2_value(self, formatted_value: str) -> tuple[str, int]:
+        """Parse filter2 value to get original value and row number."""
+        import re
+
+        # Remove checkmark if present
+        formatted_value = formatted_value.replace("✓ ", "", 1)
+
+        match = re.match(r"(.*?)\s*⟨Excel Row:\s*(\d+)⟩", formatted_value)
+        if match:
+            value = match.group(1).strip()
+            row_num = int(match.group(2))
+            return value, row_num - 2  # Convert back to 0-based index
+        return formatted_value, -1
 
     def on_filter1_select(self) -> None:
         try:
@@ -1361,22 +1295,22 @@ class ProcessingTab(Frame):
                 df = self.excel_manager.excel_data
                 # Convert column to string for comparison
                 df[config["filter1_column"]] = df[config["filter1_column"]].astype(str)
-                filtered_df = df[df[config["filter1_column"]].str.strip() == selected_value]
+                filtered_df = df[
+                    df[config["filter1_column"]].str.strip() == selected_value
+                ]
 
-                # Create a mapping of values to their row indices
-                self.filter2_row_map = {}
+                # Create list of tuples with values and row indices using cached hyperlink info
                 filter2_values = []
-                
-                for _, row in filtered_df.iterrows():
+                for idx, row in filtered_df.iterrows():
                     value = str(row[config["filter2_column"]]).strip()
-                    filter2_values.append(value)
-                    self.filter2_row_map[value] = row.name
-                
-                # Set the values in filter2 frame
+                    has_hyperlink = self.excel_manager.has_hyperlink(idx)
+                    formatted_value = self._format_filter2_value(value, idx, has_hyperlink)
+                    filter2_values.append(formatted_value)
+
                 self.filter2_frame.clear()
                 self.filter2_frame.set_values(sorted(filter2_values))
 
-                # Clear filter3 since filter2 was reset
+                # Clear filter3 since no filter2 value is selected yet
                 self.filter3_frame.clear()
                 self.filter3_frame.set_values([])
 
@@ -1387,23 +1321,39 @@ class ProcessingTab(Frame):
         try:
             config = self.config_manager.get_config()
             if self.excel_manager.excel_data is not None:
-                selected_value = str(self.filter2_frame.get()).strip()
-                if not selected_value or not hasattr(self, 'filter2_row_map'):
-                    self.filter3_frame.clear()
-                    self.filter3_frame.set_values([])
-                    return
+                selected_value1 = str(self.filter1_frame.get()).strip()
+                selected_value2_formatted = str(self.filter2_frame.get()).strip()
 
-                # Get the row index from our mapping
-                excel_row_idx = self.filter2_row_map[selected_value]
-                
-                # Get the exact filter3 value from the specific Excel row
+                # Parse the selected value to get original value and row number
+                selected_value2, row_idx = self._parse_filter2_value(
+                    selected_value2_formatted
+                )
+
                 df = self.excel_manager.excel_data
-                filter3_value = str(df.loc[excel_row_idx, config["filter3_column"]]).strip()
+                # Convert columns to string for comparison
+                df[config["filter1_column"]] = df[config["filter1_column"]].astype(str)
+                df[config["filter2_column"]] = df[config["filter2_column"]].astype(str)
+
+                # Filter based on row index if available
+                if row_idx >= 0:
+                    filtered_df = df.iloc[[row_idx]]
+                else:
+                    # Fallback to old behavior if row parsing fails
+                    filtered_df = df[
+                        (df[config["filter1_column"]].str.strip() == selected_value1)
+                        & (df[config["filter2_column"]].str.strip() == selected_value2)
+                    ]
+
+                filtered_values3 = sorted(
+                    filtered_df[config["filter3_column"]].astype(str).tolist()
+                )
+                filtered_values3 = [str(x).strip() for x in filtered_values3]
                 self.filter3_frame.clear()
-                self.filter3_frame.set_values([filter3_value])
+                self.filter3_frame.set_values(filtered_values3)
 
         except Exception as e:
             import traceback
+
             print(f"[DEBUG] Error in on_filter2_select:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
@@ -1441,6 +1391,11 @@ class ProcessingTab(Frame):
         """Load the next PDF file from the source folder."""
         try:
             config = self.config_manager.get_config()
+            
+            # Reload Excel data to ensure we have fresh data
+            if config["excel_file"] and config["excel_sheet"]:
+                self.reload_excel_data_and_update_ui()
+                
             if not config["source_folder"]:
                 self._update_status("Source folder not configured")
                 return
@@ -1470,7 +1425,6 @@ class ProcessingTab(Frame):
 
                 # Reset available values for dependent filters
                 self.filter1_frame.set_values(self.all_values1)
-
 
                 # Focus the first fuzzy search entry
                 self.filter1_frame.entry.focus_set()
@@ -1507,26 +1461,34 @@ class ProcessingTab(Frame):
             return
 
         try:
+            value1 = self.filter1_frame.get()
+            value2_formatted = self.filter2_frame.get()
+            value3 = self.filter3_frame.get()
+
+            if not value1 or not value2_formatted or not value3:
+                self._update_status("Select all filters")
+                return
+
+            # Parse the actual value and row index from the formatted filter2 value
+            value2, row_idx = self._parse_filter2_value(value2_formatted)
+
+            # Verify the combination exists in Excel
             config = self.config_manager.get_config()
-            selected_value = str(self.filter2_frame.get()).strip()
-
-
-            # Get the row index from our mapping
-            excel_row_idx = self.filter2_row_map[selected_value]
-            df = self.excel_manager.excel_data
-            row = df.loc[excel_row_idx]
-
-            # Get the actual values from the row
-            value1 = str(row[config["filter1_column"]]).strip()
-            value2 = str(row[config["filter2_column"]]).strip()
-            value3 = str(row[config["filter3_column"]]).strip()
-
-            # Create task
+            self.excel_manager.find_matching_row(
+                config["filter1_column"],
+                config["filter2_column"],
+                config["filter3_column"],
+                value1,
+                value2,
+                value3,
+            )
+            # Create task using the parsed values
             task = PDFTask(
                 pdf_path=self.current_pdf,
                 value1=value1,
                 value2=value2,
-                value3=value3
+                value3=value3,
+                row_idx=row_idx,
             )
 
             # Add to queue display
