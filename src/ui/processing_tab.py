@@ -58,10 +58,11 @@ class ProcessingQueue:
         self.tasks: Dict[str, PDFTask] = {}
         self.lock = Lock()
         self.processing_thread: Optional[Thread] = None
+        self.has_changes = False
+        self.notification_lock = Lock()  # Separate lock for notifications
         try:
             self.stop_event = Event()
         except (AttributeError, RuntimeError):
-            # Fallback for PyInstaller if Event initialization fails
             self.stop_event = Event()
 
         self.config_manager = config_manager
@@ -69,18 +70,67 @@ class ProcessingQueue:
         self.pdf_manager = pdf_manager
         self._callbacks: List[Callable] = []
 
+    def mark_changed(self) -> None:
+        """Mark that the queue has changes that need to be displayed."""
+        with self.lock:
+            self.has_changes = True
+        # Call notifications outside the lock to prevent deadlocks
+        self._notify_status_change()
+
+    def _notify_status_change(self) -> None:
+        """Notify callbacks of status changes without holding the main lock."""
+        with self.notification_lock:  # Use separate lock for notifications
+            for callback in self._callbacks:
+                try:
+                    callback()
+                except Exception as e:
+                    print(f"[DEBUG] Callback error: {str(e)}")
+
+    def update_task_status(self, task_id: str, new_status: str) -> None:
+        """Update a task's status in a thread-safe way."""
+        task_to_update = None
+        with self.lock:
+            # Find task by ID
+            for task in self.tasks.values():
+                if task.task_id == task_id:
+                    task.status = new_status
+                    task_to_update = task
+                    self.has_changes = True
+                    break
+        
+        # Notify outside the lock if we found and updated the task
+        if task_to_update:
+            self._notify_status_change()
+
+    def get_task_by_id(self, task_id: str) -> Optional[PDFTask]:
+        """Get a task by its ID in a thread-safe way."""
+        with self.lock:
+            for task in self.tasks.values():
+                if task.task_id == task_id:
+                    return task
+        return None
+
     def add_task(self, task: PDFTask) -> None:
         with self.lock:
             self.tasks[task.pdf_path] = task
-        self._notify_status_change()
+        self.mark_changed()
         self._ensure_processing()
 
-    def _notify_status_change(self) -> None:
-        for callback in self._callbacks:
-            try:
-                callback()
-            except Exception:
-                pass
+    def clear_completed(self) -> None:
+        """Clear completed tasks from the queue."""
+        with self.lock:
+            self.tasks = {k: v for k, v in self.tasks.items() if v.status != "completed"}
+        self.mark_changed()
+
+    def retry_failed(self) -> None:
+        """Retry failed tasks in the queue."""
+        with self.lock:
+            for task in self.tasks.values():
+                if task.status == "failed":
+                    task.status = "pending"
+                    task.error_msg = ""
+        self.mark_changed()
+        self._ensure_processing()
 
     def _ensure_processing(self) -> None:
         if self.processing_thread is None or not self.processing_thread.is_alive():
@@ -94,6 +144,13 @@ class ProcessingQueue:
             for task in self.tasks.values():
                 result[task.status].append(task)
             return result
+
+    def check_and_clear_changes(self) -> bool:
+        """Check if there are changes and clear the flag. Returns whether there were changes."""
+        with self.lock:
+            had_changes = self.has_changes
+            self.has_changes = False
+            return had_changes
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -109,6 +166,7 @@ class ProcessingQueue:
                     if task.status == "pending":
                         task.status = "processing"
                         task_to_process = task
+                        self.has_changes = True  # Set flag when status changes
                         self._notify_status_change()
                         break
 
@@ -197,12 +255,14 @@ class ProcessingQueue:
                 # Update task status to completed
                 with self.lock:
                     task_to_process.status = "completed"
+                    self.has_changes = True  # Set flag when status changes
                     self._notify_status_change()
 
             except Exception as e:
                 with self.lock:
                     task_to_process.status = "failed"
                     task_to_process.error_msg = str(e)
+                    self.has_changes = True  # Set flag when status changes
                     self._notify_status_change()
                 print(f"[DEBUG] Task failed: {str(e)}")
             finally:
@@ -213,6 +273,7 @@ class ProcessingQueue:
                         task_to_process.error_msg = (
                             "Task timed out or failed unexpectedly"
                         )
+                        self.has_changes = True  # Set flag when status changes
                         self._notify_status_change()
                         print(
                             "[DEBUG] Task marked as failed due to timeout or unexpected state"
@@ -858,7 +919,7 @@ class QueueDisplay(Frame):
                 # Update task status
                 with processing_tab.pdf_queue.lock:
                     task.status = "reverted"
-                    processing_tab.pdf_queue._notify_status_change()
+                    processing_tab.pdf_queue.mark_changed()  # Use mark_changed instead of direct notification
                 
                 messagebox.showinfo("Revert Successful", f"Task for '{path.basename(task.pdf_path)}' has been reverted successfully.")
             
@@ -886,18 +947,12 @@ class QueueDisplay(Frame):
     def _on_revert_task(self):
         """Handle the Revert Task action from the context menu."""
         selected_items = self.table.selection()
-        print(f"[DEBUG] Selected items in revert: {selected_items}")
-        
         if not selected_items:
             print("[DEBUG] No items selected")
             return
             
         selected_item = selected_items[0]
-        print(f"[DEBUG] Working with selected item: {selected_item}")
-        
-        # Get all values from the selected item
         item_values = self.table.item(selected_item)
-        print(f"[DEBUG] Item values: {item_values}")
         
         # Get the task ID from the first column
         task_id = item_values.get("values", [None])[0]
@@ -905,37 +960,24 @@ class QueueDisplay(Frame):
             print("[DEBUG] No task ID found")
             return
             
-        print(f"[DEBUG] Looking up task with ID: {task_id}")
-        
-        # Find the ProcessingTab instance by traversing up the widget hierarchy
+        # Find the ProcessingTab instance
         parent = self
         while parent and not isinstance(parent, ProcessingTab):
             parent = parent.master
-            print(f"[DEBUG] Traversing up to parent: {type(parent)}")
         
         if not isinstance(parent, ProcessingTab):
-            print("[DEBUG] Could not find ProcessingTab parent")
             messagebox.showerror("Error", "Internal error: Could not find processing tab.")
             return
             
         processing_tab = parent
         
-        task = None
-        with processing_tab.pdf_queue.lock:
-            # Look up task by ID
-            for t in processing_tab.pdf_queue.tasks.values():
-                if t.task_id == task_id:
-                    task = t
-                    break
-            print(f"[DEBUG] Found task: {task}")
-                
+        # Get task using the new thread-safe method
+        task = processing_tab.pdf_queue.get_task_by_id(task_id)
         if not task:
-            print("[DEBUG] Task not found")
             messagebox.showwarning("Cannot Revert", "Task not found.")
             return
             
         if task.status != "completed":
-            print(f"[DEBUG] Task status is {task.status}, not completed")
             messagebox.showwarning("Cannot Revert", "Only completed tasks can be reverted.")
             return
         
@@ -949,16 +991,15 @@ class QueueDisplay(Frame):
                 excel_file=processing_tab.config_manager.get_config()["excel_file"],
                 sheet_name=processing_tab.config_manager.get_config()["excel_sheet"],
                 row_idx=task.row_idx,
-                filter2_col=processing_tab.config_manager.get_config()["filter2_column"],  # Pass column name directly
+                filter2_col=processing_tab.config_manager.get_config()["filter2_column"],
                 original_hyperlink=task.original_excel_hyperlink,
-                original_value=task.value2  # Pass the original filter2 value
+                original_value=task.value2
             )
             
             # Convert date string to datetime object
             try:
                 date_value = datetime.strptime(task.value3, "%Y-%m-%d")
             except ValueError:
-                print(f"[DEBUG] Failed to parse date {task.value3}, trying alternative formats")
                 # Try alternative date formats
                 date_formats = ["%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"]
                 for date_format in date_formats:
@@ -975,10 +1016,8 @@ class QueueDisplay(Frame):
                 "processed_folder": processing_tab.config_manager.get_config()["processed_folder"],
                 "filter1": task.value1,
                 "filter2": task.value2,
-                "filter3": date_value,  # Use the datetime object
+                "filter3": date_value,
             }
-            
-            print(f"[DEBUG] Template data for output path: {template_data}")
             
             # Generate output path
             current_pdf_path = processing_tab.pdf_manager.generate_output_path(
@@ -986,19 +1025,14 @@ class QueueDisplay(Frame):
                 template_data
             )
             
-            print(f"[DEBUG] Generated current PDF path: {current_pdf_path}")
-            print(f"[DEBUG] Original PDF location: {task.original_pdf_location}")
-            
             # Revert PDF location
             processing_tab.pdf_manager.revert_pdf_location(
                 current_pdf_path=current_pdf_path,
                 original_pdf_location=task.original_pdf_location
             )
             
-            # Update task status
-            with processing_tab.pdf_queue.lock:
-                task.status = "reverted"
-                processing_tab.pdf_queue._notify_status_change()
+            # Update task status using the new thread-safe method
+            processing_tab.pdf_queue.update_task_status(task_id, "reverted")
             
             messagebox.showinfo("Revert Successful", f"Task for '{path.basename(task.pdf_path)}' has been reverted successfully.")
         
@@ -1755,7 +1789,7 @@ class ProcessingTab(Frame):
             )
             # Create task using the parsed values
             task = PDFTask(
-                task_id=PDFTask.generate_id(),  # Generate unique ID
+                task_id=PDFTask.generate_id(),
                 pdf_path=self.current_pdf,
                 value1=value1,
                 value2=value2,
@@ -1763,12 +1797,7 @@ class ProcessingTab(Frame):
                 row_idx=row_idx,
             )
 
-            # Add to queue display
-            self.queue_display.table.insert(
-                "", 0, values=(task.task_id, task.pdf_path, "Pending"), tags=("pending",)
-            )
-
-            # Add to processing queue
+            # Add to processing queue (this will mark changes and trigger update)
             self.pdf_queue.add_task(task)
 
             # Update status and load next file
@@ -1811,13 +1840,11 @@ class ProcessingTab(Frame):
     def _clear_completed(self) -> None:
         """Clear completed tasks from the queue."""
         self.pdf_queue.clear_completed()
-        self.update_queue_display()
         self._update_status("Completed tasks cleared")
 
     def _retry_failed(self) -> None:
         """Retry failed tasks in the queue."""
         self.pdf_queue.retry_failed()
-        self.update_queue_display()
         self._update_status("Retrying failed tasks")
 
     def update_queue_display(self) -> None:
@@ -1848,13 +1875,14 @@ class ProcessingTab(Frame):
             print(traceback.format_exc())
 
     def _periodic_update(self) -> None:
-        """Periodically update the queue display."""
+        """Periodically check for changes and update the queue display only if needed."""
         try:
-            self.update_queue_display()
+            if self.pdf_queue.check_and_clear_changes():  # Only update if there were changes
+                self.update_queue_display()
         except Exception as e:
             print(f"[DEBUG] Error in periodic update: {str(e)}")
         finally:
-            self.after(500, self._periodic_update)  # Use longer interval
+            self.after(500, self._periodic_update)
 
     def __del__(self) -> None:
         """Clean up resources when the tab is destroyed."""
