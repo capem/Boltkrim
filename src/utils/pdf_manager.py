@@ -310,3 +310,48 @@ class PDFManager:
             if isinstance(e, SocketTimeout):
                 raise Exception("Network timeout while accessing PDF file")
             raise Exception(f"Error rendering PDF: {str(e)}")
+
+    def revert_pdf_location(
+        self,
+        current_pdf_path: str,
+        original_pdf_location: str
+    ) -> None:
+        """Revert PDF file back to its original location.
+        
+        Args:
+            current_pdf_path (str): The current path of the PDF file.
+            original_pdf_location (str): The original location to move the PDF back to.
+            
+        Raises:
+            Exception: If reverting the PDF location fails.
+        """
+        try:
+            print(f"[DEBUG] Attempting to revert PDF location from '{current_pdf_path}' to '{original_pdf_location}'")
+            
+            # First, ensure the original directory exists
+            try:
+                original_dir = path.dirname(original_pdf_location)
+                if not path.exists(original_dir):
+                    print(f"[DEBUG] Creating original directory '{original_dir}'")
+                    makedirs(original_dir, exist_ok=True)
+            except Exception as e:
+                print(f"[DEBUG] Failed to create original directory '{original_dir}': {str(e)}")
+                raise
+            
+            # Move the file back to its original location
+            try:
+                copy2(current_pdf_path, original_pdf_location)
+                print(f"[DEBUG] PDF file moved back to original location '{original_pdf_location}' successfully")
+                
+                # Remove the file from the processed folder
+                if path.exists(current_pdf_path):
+                    remove(current_pdf_path)
+                    print(f"[DEBUG] Removed PDF file from processed location '{current_pdf_path}'")
+                
+            except Exception as e:
+                print(f"[DEBUG] Error reverting PDF location: {str(e)}")
+                raise Exception(f"Failed to revert PDF location: {str(e)}")
+                
+        except Exception as e:
+            print(f"[DEBUG] Error in revert_pdf_location: {str(e)}")
+            raise

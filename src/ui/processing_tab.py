@@ -6,6 +6,8 @@ from tkinter import (
     Widget,
     Toplevel,
     Frame as TkFrame,
+    messagebox,
+    Menu,
 )
 from tkinter.ttk import (
     Frame,
@@ -17,7 +19,7 @@ from tkinter.ttk import (
     Treeview,
 )
 from PIL.ImageTk import PhotoImage as PILPhotoImage
-from os import path
+from os import path, remove, makedirs
 from typing import Optional, Any, Dict, List, Callable
 from threading import Thread, Lock, Event
 from dataclasses import dataclass
@@ -32,6 +34,7 @@ from ..utils import ConfigManager, ExcelManager, PDFManager
 # Data Models
 @dataclass
 class PDFTask:
+    task_id: str  # Unique identifier for the task
     pdf_path: str
     value1: str
     value2: str
@@ -39,6 +42,14 @@ class PDFTask:
     status: str = "pending"  # pending, processing, failed, completed
     error_msg: str = ""
     row_idx: int = -1  # Add row index field
+    original_excel_hyperlink: Optional[str] = None  # New field to store original hyperlink
+    original_pdf_location: Optional[str] = None  # New field to store original PDF path
+
+    @staticmethod
+    def generate_id() -> str:
+        """Generate a unique task ID."""
+        from uuid import uuid4
+        return str(uuid4())
 
 
 # Queue Management
@@ -83,20 +94,6 @@ class ProcessingQueue:
             for task in self.tasks.values():
                 result[task.status].append(task)
             return result
-
-    def clear_completed(self) -> None:
-        with self.lock:
-            self.tasks = {
-                k: v for k, v in self.tasks.items() if v.status not in ["completed"]
-            }
-
-    def retry_failed(self) -> None:
-        with self.lock:
-            for task in self.tasks.values():
-                if task.status == "failed":
-                    task.status = "pending"
-                    task.error_msg = ""
-        self._ensure_processing()
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -174,22 +171,30 @@ class ProcessingQueue:
                     config["output_template"], template_data
                 )
 
+                # Capture the original hyperlink before updating
+                original_hyperlink = self.excel_manager.update_pdf_link(
+                    config["excel_file"],
+                    config["excel_sheet"],
+                    task_to_process.row_idx,
+                    processed_path,
+                    config["filter2_column"],
+                )
+                
+                # Assign the captured original hyperlink to the task
+                task_to_process.original_excel_hyperlink = original_hyperlink
+                
+                # Assign the original PDF location
+                task_to_process.original_pdf_location = task_to_process.pdf_path
+    
+                # Continue with processing...
                 self.pdf_manager.process_pdf(
                     task_to_process.pdf_path,
                     template_data,
                     config["processed_folder"],
                     config["output_template"],
                 )
-
-                # Update Excel with the new path using the stored row index
-                excel_manager.update_pdf_link(
-                    config["excel_file"],
-                    config["excel_sheet"],
-                    task_to_process.row_idx,  # Use the stored row index
-                    processed_path,
-                    config["filter2_column"],
-                )
-
+    
+                # Update task status to completed
                 with self.lock:
                     task_to_process.status = "completed"
                     self._notify_status_change()
@@ -476,6 +481,8 @@ class QueueDisplay(Frame):
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0)  # For buttons
 
+        print("[DEBUG] Setting up QueueDisplay UI")
+        
         # Create a frame for the table and scrollbar with a light background
         table_frame = Frame(self, style="Card.TFrame")
         table_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
@@ -483,7 +490,8 @@ class QueueDisplay(Frame):
         table_frame.grid_rowconfigure(0, weight=1)
 
         # Setup table with more informative columns
-        columns = ("filename", "values", "status", "time")
+        columns = ("task_id", "filename", "values", "status", "time")
+        print("[DEBUG] Creating Treeview with columns:", columns)
         self.table = Treeview(
             table_frame,
             columns=columns,
@@ -491,6 +499,19 @@ class QueueDisplay(Frame):
             selectmode="browse",  # Single selection mode
             style="Queue.Treeview"
         )
+
+        # Create context menu
+        print("[DEBUG] Creating context menu")
+        self.context_menu = Menu(self, tearoff=0)
+        self.context_menu.add_command(
+            label="Revert Task",
+            command=self._on_revert_task
+        )
+
+        # Bind right-click to show context menu
+        print("[DEBUG] Binding context menu events")
+        self.table.bind("<Button-3>", self._show_context_menu)  # Windows/Linux right-click
+        self.table.bind("<Button-2>", self._show_context_menu)  # macOS right-click
 
         # Configure modern style for the treeview
         style = Style()
@@ -517,12 +538,14 @@ class QueueDisplay(Frame):
         )
 
         # Configure headings with sort functionality and modern look
+        self.table.heading("task_id", text="Task ID", anchor="w", command=lambda: self._sort_column("task_id"))
         self.table.heading("filename", text="File", anchor="w", command=lambda: self._sort_column("filename"))
         self.table.heading("values", text="Selected Values", anchor="w", command=lambda: self._sort_column("values"))
         self.table.heading("status", text="Status", anchor="w", command=lambda: self._sort_column("status"))
         self.table.heading("time", text="Time", anchor="w", command=lambda: self._sort_column("time"))
 
         # Configure column properties
+        self.table.column("task_id", width=0, minwidth=0, stretch=False)  # Hidden column for internal use
         self.table.column("filename", width=250, minwidth=150, stretch=True)
         self.table.column("values", width=250, minwidth=150, stretch=True)
         self.table.column("status", width=100, minwidth=80, stretch=False)
@@ -558,13 +581,15 @@ class QueueDisplay(Frame):
         self.table.tag_configure("processing", foreground="#007bff")
         self.table.tag_configure("completed", foreground="#28a745")
         self.table.tag_configure("failed", foreground="#dc3545")
+        self.table.tag_configure("reverted", foreground="#6c757d")  # Add reverted status color
 
         # Add status icons
         self.status_icons = {
             "pending": "⋯",  # Three dots
             "processing": "↻",  # Rotating arrow
             "completed": "✓",  # Checkmark
-            "failed": "✗"  # X mark
+            "failed": "✗",  # X mark
+            "reverted": "↺"  # Curved arrow for reverted status
         }
 
         # Bind events for interactivity
@@ -609,15 +634,32 @@ class QueueDisplay(Frame):
 
     def update_display(self, tasks: Dict[str, PDFTask]) -> None:
         """Update the queue display with current tasks."""
+        print("[DEBUG] Updating display with tasks:", len(tasks))
+        
+        # Store current selection
         selection = self.table.selection()
-        selected_paths = [self.table.item(item)["values"][0] for item in selection]
+        print("[DEBUG] Current selection before update:", selection)
+        
+        # Get currently selected task IDs
+        selected_task_ids = []
+        for item in selection:
+            values = self.table.item(item)["values"]
+            if values and len(values) > 0:
+                selected_task_ids.append(str(values[0]))  # First column is now task_id
+        print("[DEBUG] Selected task IDs:", selected_task_ids)
 
+        # Get current items in table
         current_items = {}
         for item in self.table.get_children():
-            path_value = self.table.item(item)["values"][0]
-            current_items[path_value] = item
+            values = self.table.item(item)["values"]
+            if values and len(values) > 0:
+                current_items[str(values[0])] = item  # First column is now task_id
+        print("[DEBUG] Current items in table:", len(current_items))
 
-        for task_path, task in tasks.items():
+        # Track which items need to be removed
+        items_to_remove = set(current_items.keys())
+
+        for task in tasks.values():
             # Format the values string for better readability
             values_str = self._format_values_display(f"{task.value1} | {task.value2} | {task.value3}")
 
@@ -627,35 +669,49 @@ class QueueDisplay(Frame):
             # Add status icon to status text
             status_display = f"{self.status_icons[task.status]} {task.status.capitalize()}"
 
-            # Create display values
+            # Create display values with task_id as first column
             display_values = (
-                path.basename(task_path),  # Show only filename in table
+                task.task_id,  # Use task_id as identifier
+                task.pdf_path,
                 values_str,
                 status_display,
                 time_str,
             )
 
-            if task_path in current_items:
-                # Update existing item
-                item_id = current_items[task_path]
-                for idx, value in enumerate(display_values):
-                    self.table.set(item_id, column=idx, value=value)
-                self.table.item(item_id, tags=(task.status,))
-                current_items.pop(task_path)
+            if task.task_id in current_items:
+                # Update existing item only if values have changed
+                item_id = current_items[task.task_id]
+                current_values = [str(v) for v in self.table.item(item_id)["values"]]
+                new_values = [str(v) for v in display_values]
+                
+                if current_values != new_values:
+                    print(f"[DEBUG] Updating existing item {item_id} for task {task.task_id}")
+                    for idx, value in enumerate(display_values):
+                        self.table.set(item_id, column=idx, value=value)
+                    self.table.item(item_id, tags=(task.status,))
+                
+                # Don't remove this item
+                items_to_remove.discard(task.task_id)
             else:
                 # Insert new item
+                print(f"[DEBUG] Inserting new item for task {task.task_id}")
                 item = self.table.insert(
                     "",
-                    0,
+                    "end",  # Insert at end to maintain order
                     values=display_values,
                     tags=(task.status,),
                 )
-                if task_path in selected_paths:
+                if task.task_id in selected_task_ids:
+                    print(f"[DEBUG] Restoring selection for {task.task_id}")
                     self.table.selection_add(item)
 
         # Remove items that no longer exist
-        for item_id in current_items.values():
+        for task_id in items_to_remove:
+            item_id = current_items[task_id]
+            print(f"[DEBUG] Removing item {item_id} for task {task_id}")
             self.table.delete(item_id)
+
+        print("[DEBUG] Final selection after update:", self.table.selection())
 
     def _show_task_details(self, event: TkEvent) -> None:
         """Show task details in a dialog when double-clicking a row."""
@@ -665,7 +721,7 @@ class QueueDisplay(Frame):
 
         # Get the task values
         values = self.table.item(item)["values"]
-        if not values:
+        if not values or len(values) < 4:  # Make sure we have all required values
             return
 
         # Create a dialog window
@@ -685,11 +741,11 @@ class QueueDisplay(Frame):
 
         # Add details with proper formatting and spacing
         details = [
-            ("File:", path.basename(values[0])),
-            ("Full Path:", values[0]),
-            ("Selected Values:", values[1]),
-            ("Status:", values[2]),
-            ("Time:", values[3] if len(values) > 3 else ""),
+            ("File:", path.basename(str(values[0]))),
+            ("Full Path:", str(values[0])),
+            ("Selected Values:", str(values[1])),
+            ("Status:", str(values[2])),
+            ("Time:", str(values[3]) if len(values) > 3 else ""),
         ]
 
         # Add each detail with proper styling
@@ -702,7 +758,7 @@ class QueueDisplay(Frame):
             )
 
         # Add error message if status is failed
-        if values[2].lower() == "failed":
+        if values[2] and "failed" in str(values[2]).lower():
             Label(frame, text="Error Message:", font=("Segoe UI", 10, "bold")).grid(
                 row=len(details), column=0, sticky="w", pady=(10, 0)
             )
@@ -711,31 +767,246 @@ class QueueDisplay(Frame):
             task_path = values[0]
             error_msg = "No error message available"
 
-            # Get the parent ProcessingTab instance
-            processing_tab = self.master.master
-            if hasattr(processing_tab, "pdf_queue"):
+            # Find the ProcessingTab instance by traversing up the widget hierarchy
+            parent = self
+            while parent and not isinstance(parent, ProcessingTab):
+                parent = parent.master
+                print(f"[DEBUG] Traversing up to parent: {type(parent)}")
+            
+            if not isinstance(parent, ProcessingTab):
+                print("[DEBUG] Could not find ProcessingTab parent")
+                messagebox.showerror("Error", "Internal error: Could not find processing tab.")
+                return
+            
+            processing_tab = parent
+            
+            task = None
+            with processing_tab.pdf_queue.lock:
+                # Look up task by ID
+                for t in processing_tab.pdf_queue.tasks.values():
+                    if t.task_id == task_id:
+                        task = t
+                        break
+                print(f"[DEBUG] Found task: {task}")
+                
+            if not task:
+                print("[DEBUG] Task not found")
+                messagebox.showwarning("Cannot Revert", "Task not found.")
+                return
+            
+            if task.status != "completed":
+                print(f"[DEBUG] Task status is {task.status}, not completed")
+                messagebox.showwarning("Cannot Revert", "Only completed tasks can be reverted.")
+                return
+            
+            confirm = messagebox.askyesno("Confirm Revert", f"Are you sure you want to revert the task for '{path.basename(task.pdf_path)}'?")
+            if not confirm:
+                return
+            
+            try:
+                # Revert Excel hyperlink
+                processing_tab.excel_manager.revert_pdf_link(
+                    excel_file=processing_tab.config_manager.get_config()["excel_file"],
+                    sheet_name=processing_tab.config_manager.get_config()["excel_sheet"],
+                    row_idx=task.row_idx,
+                    filter2_col=processing_tab.config_manager.get_config()["filter2_column"],  # Pass column name directly
+                    original_hyperlink=task.original_excel_hyperlink,
+                    original_value=task.value2  # Pass the original filter2 value
+                )
+                
+                # Convert date string to datetime object
+                try:
+                    date_value = datetime.strptime(task.value3, "%Y-%m-%d")
+                except ValueError:
+                    print(f"[DEBUG] Failed to parse date {task.value3}, trying alternative formats")
+                    # Try alternative date formats
+                    date_formats = ["%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"]
+                    for date_format in date_formats:
+                        try:
+                            date_value = datetime.strptime(task.value3, date_format)
+                            break
+                        except ValueError:
+                            continue
+                    else:
+                        raise ValueError(f"Could not parse date: {task.value3}")
+                
+                # Prepare template data with datetime object
+                template_data = {
+                    "processed_folder": processing_tab.config_manager.get_config()["processed_folder"],
+                    "filter1": task.value1,
+                    "filter2": task.value2,
+                    "filter3": date_value,  # Use the datetime object
+                }
+                
+                print(f"[DEBUG] Template data for output path: {template_data}")
+                
+                # Generate output path
+                current_pdf_path = processing_tab.pdf_manager.generate_output_path(
+                    processing_tab.config_manager.get_config()["output_template"],
+                    template_data
+                )
+                
+                print(f"[DEBUG] Generated current PDF path: {current_pdf_path}")
+                print(f"[DEBUG] Original PDF location: {task.original_pdf_location}")
+                
+                # Revert PDF location
+                processing_tab.pdf_manager.revert_pdf_location(
+                    current_pdf_path=current_pdf_path,
+                    original_pdf_location=task.original_pdf_location
+                )
+                
+                # Update task status
                 with processing_tab.pdf_queue.lock:
-                    task = processing_tab.pdf_queue.tasks.get(task_path)
-                    if task and task.error_msg:
-                        error_msg = task.error_msg
+                    task.status = "reverted"
+                    processing_tab.pdf_queue._notify_status_change()
+                
+                messagebox.showinfo("Revert Successful", f"Task for '{path.basename(task.pdf_path)}' has been reverted successfully.")
+            
+            except Exception as e:
+                print(f"[DEBUG] Revert failed: {str(e)}")
+                import traceback
+                print(traceback.format_exc())
+                messagebox.showerror("Revert Failed", f"Failed to revert the task: {str(e)}")
 
-            error_label = Label(
-                frame, text=error_msg, wraplength=300, justify="left", foreground="red"
+    def _show_context_menu(self, event):
+        """Display the context menu on right-click."""
+        print(f"[DEBUG] Right-click event at y={event.y}")
+        selected_item = self.table.identify_row(event.y)
+        print(f"[DEBUG] Identified row: {selected_item}")
+        
+        if selected_item:
+            print(f"[DEBUG] Setting selection to: {selected_item}")
+            self.table.selection_set(selected_item)
+            print(f"[DEBUG] Current selection: {self.table.selection()}")
+            print(f"[DEBUG] Posting menu at x={event.x_root}, y={event.y_root}")
+            self.context_menu.post(event.x_root, event.y_root)
+        else:
+            print("[DEBUG] No row identified at click position")
+
+    def _on_revert_task(self):
+        """Handle the Revert Task action from the context menu."""
+        selected_items = self.table.selection()
+        print(f"[DEBUG] Selected items in revert: {selected_items}")
+        
+        if not selected_items:
+            print("[DEBUG] No items selected")
+            return
+            
+        selected_item = selected_items[0]
+        print(f"[DEBUG] Working with selected item: {selected_item}")
+        
+        # Get all values from the selected item
+        item_values = self.table.item(selected_item)
+        print(f"[DEBUG] Item values: {item_values}")
+        
+        # Get the task ID from the first column
+        task_id = item_values.get("values", [None])[0]
+        if not task_id:
+            print("[DEBUG] No task ID found")
+            return
+            
+        print(f"[DEBUG] Looking up task with ID: {task_id}")
+        
+        # Find the ProcessingTab instance by traversing up the widget hierarchy
+        parent = self
+        while parent and not isinstance(parent, ProcessingTab):
+            parent = parent.master
+            print(f"[DEBUG] Traversing up to parent: {type(parent)}")
+        
+        if not isinstance(parent, ProcessingTab):
+            print("[DEBUG] Could not find ProcessingTab parent")
+            messagebox.showerror("Error", "Internal error: Could not find processing tab.")
+            return
+            
+        processing_tab = parent
+        
+        task = None
+        with processing_tab.pdf_queue.lock:
+            # Look up task by ID
+            for t in processing_tab.pdf_queue.tasks.values():
+                if t.task_id == task_id:
+                    task = t
+                    break
+            print(f"[DEBUG] Found task: {task}")
+                
+        if not task:
+            print("[DEBUG] Task not found")
+            messagebox.showwarning("Cannot Revert", "Task not found.")
+            return
+            
+        if task.status != "completed":
+            print(f"[DEBUG] Task status is {task.status}, not completed")
+            messagebox.showwarning("Cannot Revert", "Only completed tasks can be reverted.")
+            return
+        
+        confirm = messagebox.askyesno("Confirm Revert", f"Are you sure you want to revert the task for '{path.basename(task.pdf_path)}'?")
+        if not confirm:
+            return
+        
+        try:
+            # Revert Excel hyperlink
+            processing_tab.excel_manager.revert_pdf_link(
+                excel_file=processing_tab.config_manager.get_config()["excel_file"],
+                sheet_name=processing_tab.config_manager.get_config()["excel_sheet"],
+                row_idx=task.row_idx,
+                filter2_col=processing_tab.config_manager.get_config()["filter2_column"],  # Pass column name directly
+                original_hyperlink=task.original_excel_hyperlink,
+                original_value=task.value2  # Pass the original filter2 value
             )
-            error_label.grid(
-                row=len(details), column=1, sticky="w", padx=(10, 0), pady=(10, 0)
+            
+            # Convert date string to datetime object
+            try:
+                date_value = datetime.strptime(task.value3, "%Y-%m-%d")
+            except ValueError:
+                print(f"[DEBUG] Failed to parse date {task.value3}, trying alternative formats")
+                # Try alternative date formats
+                date_formats = ["%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"]
+                for date_format in date_formats:
+                    try:
+                        date_value = datetime.strptime(task.value3, date_format)
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    raise ValueError(f"Could not parse date: {task.value3}")
+            
+            # Prepare template data with datetime object
+            template_data = {
+                "processed_folder": processing_tab.config_manager.get_config()["processed_folder"],
+                "filter1": task.value1,
+                "filter2": task.value2,
+                "filter3": date_value,  # Use the datetime object
+            }
+            
+            print(f"[DEBUG] Template data for output path: {template_data}")
+            
+            # Generate output path
+            current_pdf_path = processing_tab.pdf_manager.generate_output_path(
+                processing_tab.config_manager.get_config()["output_template"],
+                template_data
             )
-
-        # Add close button at the bottom
-        Button(frame, text="Close", command=dialog.destroy).grid(
-            row=len(details) + 1, column=0, columnspan=2, pady=(20, 0)
-        )
-
-        # Make dialog resizable
-        dialog.resizable(True, True)
-
-        # Focus the dialog
-        dialog.focus_set()
+            
+            print(f"[DEBUG] Generated current PDF path: {current_pdf_path}")
+            print(f"[DEBUG] Original PDF location: {task.original_pdf_location}")
+            
+            # Revert PDF location
+            processing_tab.pdf_manager.revert_pdf_location(
+                current_pdf_path=current_pdf_path,
+                original_pdf_location=task.original_pdf_location
+            )
+            
+            # Update task status
+            with processing_tab.pdf_queue.lock:
+                task.status = "reverted"
+                processing_tab.pdf_queue._notify_status_change()
+            
+            messagebox.showinfo("Revert Successful", f"Task for '{path.basename(task.pdf_path)}' has been reverted successfully.")
+        
+        except Exception as e:
+            print(f"[DEBUG] Revert failed: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            messagebox.showerror("Revert Failed", f"Failed to revert the task: {str(e)}")
 
 
 class ProcessingTab(Frame):
@@ -1484,6 +1755,7 @@ class ProcessingTab(Frame):
             )
             # Create task using the parsed values
             task = PDFTask(
+                task_id=PDFTask.generate_id(),  # Generate unique ID
                 pdf_path=self.current_pdf,
                 value1=value1,
                 value2=value2,
@@ -1493,7 +1765,7 @@ class ProcessingTab(Frame):
 
             # Add to queue display
             self.queue_display.table.insert(
-                "", 0, values=(task.pdf_path, "Pending"), tags=("pending",)
+                "", 0, values=(task.task_id, task.pdf_path, "Pending"), tags=("pending",)
             )
 
             # Add to processing queue
@@ -1553,16 +1825,16 @@ class ProcessingTab(Frame):
         try:
             with self.pdf_queue.lock:
                 tasks = self.pdf_queue.tasks.copy()
+                # Update queue statistics
+                total = len(tasks)
+                completed = sum(1 for t in tasks.values() if t.status == "completed")
+                failed = sum(1 for t in tasks.values() if t.status == "failed")
+                pending = sum(1 for t in tasks.values() if t.status in ["pending", "processing"])
+
+            # Update the display
             self.queue_display.update_display(tasks)
 
-            # Update queue statistics
-            total = len(tasks)
-            completed = sum(1 for t in tasks.values() if t.status == "completed")
-            failed = sum(1 for t in tasks.values() if t.status == "failed")
-            pending = sum(
-                1 for t in tasks.values() if t.status in ["pending", "processing"]
-            )
-
+            # Update statistics display
             if total > 0:
                 self.queue_stats.configure(
                     text=f"Queue: {total} total ({completed} completed, {failed} failed, {pending} pending)"
@@ -1571,12 +1843,18 @@ class ProcessingTab(Frame):
                 self.queue_stats.configure(text="Queue: 0 total")
 
         except Exception as e:
-            print(f"Error updating queue display: {str(e)}")
+            print(f"[DEBUG] Error updating queue display: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
 
     def _periodic_update(self) -> None:
         """Periodically update the queue display."""
-        self.update_queue_display()
-        self.after(100, self._periodic_update)
+        try:
+            self.update_queue_display()
+        except Exception as e:
+            print(f"[DEBUG] Error in periodic update: {str(e)}")
+        finally:
+            self.after(500, self._periodic_update)  # Use longer interval
 
     def __del__(self) -> None:
         """Clean up resources when the tab is destroyed."""
