@@ -103,9 +103,7 @@ class ProcessingQueue:
     def clear_completed(self) -> None:
         """Clear completed tasks from the queue."""
         with self.lock:
-            self.tasks = {
-                k: v for k, v in self.tasks.items() if v.status != "completed"
-            }
+            self.tasks = {k: v for k, v in self.tasks.items() if v.status != "completed"}
         self.mark_changed()
 
     def retry_failed(self) -> None:
@@ -127,12 +125,12 @@ class ProcessingQueue:
     def get_task_status(self) -> Dict[str, List[PDFTask]]:
         with self.lock:
             result = {
-                "pending": [], 
-                "processing": [], 
-                "failed": [], 
+                "pending": [],
+                "processing": [],
+                "failed": [],
                 "completed": [],
                 "reverted": [],
-                "skipped": []  # Add skipped status to tracking
+                "skipped": [],  # Add skipped status to tracking
             }
             for task in self.tasks.values():
                 if task.status in result:
@@ -173,9 +171,7 @@ class ProcessingQueue:
                 excel_manager = type(self.excel_manager)()
 
                 # Load Excel data and find matching row - ExcelManager handles its own errors
-                excel_manager.load_excel_data(
-                    config["excel_file"], config["excel_sheet"]
-                )
+                excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
                 row_data, row_idx = excel_manager.find_matching_row(
                     config["filter1_column"],
                     config["filter2_column"],
@@ -201,14 +197,16 @@ class ProcessingQueue:
                         # Update task with new row index
                         task_to_process.row_idx = row_idx
                         print(f"[DEBUG] Added new row with index: {row_idx}")
-                        
+
                         # Reload Excel data after adding new row
-                        time.sleep(0.5)  # Give the file system time to finish writing
+                        # Give the file system time to finish writing
+                        time.sleep(0.5)
                         excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
-                        
+
                     except Exception as e:
                         task_to_process.status = "failed"
-                        task_to_process.error_msg = f"Failed to create new row: {str(e)}"
+                        task_to_process.error_msg = f"Failed to create new row: {
+                            str(e)}"
                         self.mark_changed()
                         continue
                 else:
@@ -230,7 +228,7 @@ class ProcessingQueue:
                 # Process all columns in one pass
                 for column in row_data.index:
                     value = row_data[column]
-                    
+
                     # Handle any column that might contain dates
                     if "DATE" in column.upper():
                         if pd.isnull(value):
@@ -246,10 +244,13 @@ class ProcessingQueue:
                                     break
                                 except ValueError:
                                     continue
-                            
+
                             if parsed_date is None:
-                                raise ValueError(f"Could not parse date '{value}' in column '{column}'")
-                            
+                                raise ValueError(
+                                    f"Could not parse date '{
+                                                 value}' in column '{column}'"
+                                )
+
                             template_data[column] = parsed_date
                     else:
                         template_data[column] = value
@@ -261,9 +262,7 @@ class ProcessingQueue:
 
                 # Add processed_folder to template data and process PDF
                 template_data["processed_folder"] = config["processed_folder"]
-                processed_path = self.pdf_manager.generate_output_path(
-                    config["output_template"], template_data
-                )
+                processed_path = self.pdf_manager.generate_output_path(config["output_template"], template_data)
 
                 # Capture the original hyperlink before updating
                 original_hyperlink = self.excel_manager.update_pdf_link(
@@ -306,14 +305,10 @@ class ProcessingQueue:
                 with self.lock:
                     if task_to_process and task_to_process.status == "processing":
                         task_to_process.status = "failed"
-                        task_to_process.error_msg = (
-                            "Task timed out or failed unexpectedly"
-                        )
+                        task_to_process.error_msg = "Task timed out or failed unexpectedly"
                         self.has_changes = True  # Set flag when status changes
                         self._notify_status_change()
-                        print(
-                            "[DEBUG] Task marked as failed due to timeout or unexpected state"
-                        )
+                        print("[DEBUG] Task marked as failed due to timeout or unexpected state")
 
     def add_skipped_task(self, task: PDFTask) -> None:
         """Add a skipped task to the queue without triggering processing."""
@@ -402,9 +397,7 @@ class ProcessingTab(Frame):
         )
 
         # Configure frame styles
-        style.configure(
-            "Card.TFrame", background="#ffffff", relief="solid", borderwidth=1
-        )
+        style.configure("Card.TFrame", background="#ffffff", relief="solid", borderwidth=1)
 
         # Configure Treeview
         style.configure("Treeview", font=("Segoe UI", 10), rowheight=25)
@@ -454,12 +447,8 @@ class ProcessingTab(Frame):
         self.handle_button.place(relx=0.5, rely=0.5, anchor="center", relheight=0.1)
 
         # Make handle frame draggable for resizing
-        self.handle_frame.bind(
-            "<Enter>", lambda e: self.handle_frame.configure(cursor="sb_h_double_arrow")
-        )
-        self.handle_frame.bind(
-            "<Leave>", lambda e: self.handle_frame.configure(cursor="")
-        )
+        self.handle_frame.bind("<Enter>", lambda e: self.handle_frame.configure(cursor="sb_h_double_arrow"))
+        self.handle_frame.bind("<Leave>", lambda e: self.handle_frame.configure(cursor=""))
         self.handle_frame.bind("<Button-1>", self._start_resize)
         self.handle_frame.bind("<B1-Motion>", self._do_resize)
         self.handle_frame.bind("<ButtonRelease-1>", self._end_resize)
@@ -495,16 +484,10 @@ class ProcessingTab(Frame):
 
     def _do_resize(self, event: TkEvent) -> None:
         """Resize the left panel based on mouse drag."""
-        if (
-            not hasattr(self, "resizing")
-            or not self.resizing
-            or not self.left_panel_visible
-        ):
+        if not hasattr(self, "resizing") or not self.resizing or not self.left_panel_visible:
             return
         delta_x = event.x_root - self.start_x
-        new_width = max(
-            200, min(800, self.start_width + delta_x)
-        )  # Limit width between 200 and 400
+        new_width = max(200, min(800, self.start_width + delta_x))  # Limit width between 200 and 400
 
         # Only update if width actually changed
         if new_width != self.left_panel_width:
@@ -527,11 +510,13 @@ class ProcessingTab(Frame):
         """Toggle the visibility of the left panel."""
         if self.left_panel_visible:
             self.left_panel.grid_remove()
-            self.handle_button.configure(text="›")  # Right arrow when collapsed
+            # Right arrow when collapsed
+            self.handle_button.configure(text="›")
             self.left_panel_visible = False
         else:
             self.left_panel.grid()
-            self.handle_button.configure(text="⋮")  # Vertical dots when expanded
+            # Vertical dots when expanded
+            self.handle_button.configure(text="⋮")
             self.left_panel_visible = True
             self.left_panel.configure(width=self.left_panel_width)
 
@@ -548,9 +533,7 @@ class ProcessingTab(Frame):
             if current_width < min_width:
                 # Instead of changing window geometry, adjust panel sizes
                 if self.left_panel_visible:
-                    self.left_panel_width = max(
-                        200, self.left_panel_width - (min_width - current_width)
-                    )
+                    self.left_panel_width = max(200, self.left_panel_width - (min_width - current_width))
                     self.left_panel.configure(width=self.left_panel_width)
 
             # Update layout
@@ -575,7 +558,7 @@ class ProcessingTab(Frame):
             text="No file loaded (click to select file)",
             style="Header.TLabel",
             wraplength=200,
-            cursor="hand2"  # Change cursor to hand when hovering
+            cursor="hand2",  # Change cursor to hand when hovering
         )
         self.file_info.pack(fill="x", pady=5)
         self.file_info.bind("<Button-1>", self._on_file_info_click)
@@ -619,27 +602,19 @@ class ProcessingTab(Frame):
         zoom_frame = Frame(controls_frame)
         zoom_frame.pack(side="left")
 
-        Button(zoom_frame, text="−", width=3, command=self.pdf_viewer.zoom_out).pack(
-            side="left", padx=2
-        )
+        Button(zoom_frame, text="−", width=3, command=self.pdf_viewer.zoom_out).pack(side="left", padx=2)
         self.zoom_label = Label(zoom_frame, text="100%", width=6)
         self.zoom_label.pack(side="left", padx=5)
-        Button(zoom_frame, text="+", width=3, command=self.pdf_viewer.zoom_in).pack(
-            side="left", padx=2
-        )
+        Button(zoom_frame, text="+", width=3, command=self.pdf_viewer.zoom_in).pack(side="left", padx=2)
 
         # Rotation Controls
         rotation_frame = Frame(controls_frame)
         rotation_frame.pack(side="right")
 
-        Button(
-            rotation_frame, text="↶", width=3, command=self.rotate_counterclockwise
-        ).pack(side="left", padx=2)
+        Button(rotation_frame, text="↶", width=3, command=self.rotate_counterclockwise).pack(side="left", padx=2)
         self.rotation_label = Label(rotation_frame, text="0°", width=6)
         self.rotation_label.pack(side="left", padx=5)
-        Button(rotation_frame, text="↷", width=3, command=self.rotate_clockwise).pack(
-            side="left", padx=2
-        )
+        Button(rotation_frame, text="↷", width=3, command=self.rotate_clockwise).pack(side="left", padx=2)
 
         return panel
 
@@ -707,12 +682,15 @@ class ProcessingTab(Frame):
         )
         self.filter3_frame.pack(fill="x")
 
-        # Bind events
+        # Bind events for list selection
         self.filter1_frame.bind("<<ValueSelected>>", lambda e: self.on_filter1_select())
         self.filter2_frame.bind("<<ValueSelected>>", lambda e: self.on_filter2_select())
-        self.filter3_frame.bind(
-            "<<ValueSelected>>", lambda e: self.update_confirm_button()
-        )
+        self.filter3_frame.bind("<<ValueSelected>>", lambda e: self.update_confirm_button())
+
+        # Add bindings for manual entry changes
+        self.filter1_frame.entry.bind("<KeyRelease>", lambda e: self.update_confirm_button())
+        self.filter2_frame.entry.bind("<KeyRelease>", lambda e: self.update_confirm_button())
+        self.filter3_frame.entry.bind("<KeyRelease>", lambda e: self.update_confirm_button())
 
         # Bind keyboard navigation
         self._bind_keyboard_shortcuts()
@@ -783,7 +761,8 @@ class ProcessingTab(Frame):
 
     def _handle_return_key(self, event: Event) -> str:
         """Handle Return key press to process the current file."""
-        if str(self.confirm_button["state"]) != "disabled":
+        # Check if button is not disabled using ttk's state system
+        if "disabled" not in self.confirm_button.state():
             self.process_current_file()
         return "break"
 
@@ -808,9 +787,7 @@ class ProcessingTab(Frame):
                 print("Missing configuration values")
                 return
 
-            self.excel_manager.load_excel_data(
-                config["excel_file"], config["excel_sheet"]
-            )
+            self.excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
 
             # Cache hyperlinks for filter2 column only
             self.excel_manager.cache_hyperlinks_for_column(
@@ -830,15 +807,9 @@ class ProcessingTab(Frame):
                 return str(val).strip()
 
             # Convert column values to strings
-            self.all_values1 = sorted(
-                df[config["filter1_column"]].astype(str).unique().tolist()
-            )
-            self.all_values2 = sorted(
-                df[config["filter2_column"]].astype(str).unique().tolist()
-            )
-            self.all_values3 = sorted(
-                df[config["filter3_column"]].astype(str).unique().tolist()
-            )
+            self.all_values1 = sorted(df[config["filter1_column"]].astype(str).unique().tolist())
+            self.all_values2 = sorted(df[config["filter2_column"]].astype(str).unique().tolist())
+            self.all_values3 = sorted(df[config["filter3_column"]].astype(str).unique().tolist())
 
             # Strip whitespace and ensure string type
             self.all_values1 = [safe_convert_to_str(x) for x in self.all_values1]
@@ -852,12 +823,11 @@ class ProcessingTab(Frame):
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}")
 
-    def _format_filter2_value(
-        self, value: str, row_idx: int, has_hyperlink: bool = False
-    ) -> str:
+    def _format_filter2_value(self, value: str, row_idx: int, has_hyperlink: bool = False) -> str:
         """Format filter2 value with row number and checkmark if hyperlinked."""
         prefix = "✓ " if has_hyperlink else ""
-        return f"{prefix}{value} ⟨Excel Row: {row_idx + 2}⟩"  # +2 because Excel is 1-based and has header
+        # +2 because Excel is 1-based and has header
+        return f"{prefix}{value} ⟨Excel Row: {row_idx + 2}⟩"
 
     def _parse_filter2_value(self, formatted_value: str) -> tuple[str, int]:
         """Parse filter2 value to get original value and row number."""
@@ -882,18 +852,14 @@ class ProcessingTab(Frame):
                 df = self.excel_manager.excel_data
                 # Convert column to string for comparison
                 df[config["filter1_column"]] = df[config["filter1_column"]].astype(str)
-                filtered_df = df[
-                    df[config["filter1_column"]].str.strip() == selected_value
-                ]
+                filtered_df = df[df[config["filter1_column"]].str.strip() == selected_value]
 
                 # Create list of tuples with values and row indices using cached hyperlink info
                 filter2_values = []
                 for idx, row in filtered_df.iterrows():
                     value = str(row[config["filter2_column"]]).strip()
                     has_hyperlink = self.excel_manager.has_hyperlink(idx)
-                    formatted_value = self._format_filter2_value(
-                        value, idx, has_hyperlink
-                    )
+                    formatted_value = self._format_filter2_value(value, idx, has_hyperlink)
                     filter2_values.append(formatted_value)
 
                 self.filter2_frame.clear()
@@ -914,9 +880,7 @@ class ProcessingTab(Frame):
                 selected_value2_formatted = str(self.filter2_frame.get()).strip()
 
                 # Parse the selected value to get original value and row number
-                selected_value2, row_idx = self._parse_filter2_value(
-                    selected_value2_formatted
-                )
+                selected_value2, row_idx = self._parse_filter2_value(selected_value2_formatted)
 
                 df = self.excel_manager.excel_data
                 # Convert columns to string for comparison
@@ -933,9 +897,7 @@ class ProcessingTab(Frame):
                         & (df[config["filter2_column"]].str.strip() == selected_value2)
                     ]
 
-                filtered_values3 = sorted(
-                    filtered_df[config["filter3_column"]].astype(str).tolist()
-                )
+                filtered_values3 = sorted(filtered_df[config["filter3_column"]].astype(str).tolist())
                 filtered_values3 = [str(x).strip() for x in filtered_values3]
                 self.filter3_frame.clear()
                 self.filter3_frame.set_values(filtered_values3)
@@ -949,11 +911,7 @@ class ProcessingTab(Frame):
 
     def update_confirm_button(self) -> None:
         """Update the confirm button state based on filter selections."""
-        if (
-            self.filter1_frame.get()
-            and self.filter2_frame.get()
-            and self.filter3_frame.get()
-        ):
+        if self.filter1_frame.get() and self.filter2_frame.get() and self.filter3_frame.get():
             self.confirm_button.state(["!disabled"])
             self._update_status("Ready to process")
         else:
@@ -964,17 +922,13 @@ class ProcessingTab(Frame):
         """Rotate the PDF view clockwise."""
         self.pdf_manager.rotate_page(clockwise=True)
         self.rotation_label.config(text=f"{self.pdf_manager.get_rotation()}°")
-        self.pdf_viewer.display_pdf(
-            self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False
-        )
+        self.pdf_viewer.display_pdf(self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False)
 
     def rotate_counterclockwise(self) -> None:
         """Rotate the PDF view counterclockwise."""
         self.pdf_manager.rotate_page(clockwise=False)
         self.rotation_label.config(text=f"{self.pdf_manager.get_rotation()}°")
-        self.pdf_viewer.display_pdf(
-            self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False
-        )
+        self.pdf_viewer.display_pdf(self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False)
 
     def _move_to_skipped_folder(self, pdf_path: str) -> None:
         """Move a skipped PDF file to the skipped documents folder."""
@@ -982,11 +936,11 @@ class ProcessingTab(Frame):
             skipped_folder = r"\\192.168.0.77\tarec\Archive\SCANNER\SKIPPED DOCUMENT"
             if not path.exists(skipped_folder):
                 makedirs(skipped_folder, exist_ok=True)
-            
+
             # Get the filename and create the destination path
             filename = path.basename(pdf_path)
             dest_path = path.join(skipped_folder, filename)
-            
+
             # If file already exists in destination, get a versioned name
             if path.exists(dest_path):
                 base_name = path.splitext(filename)[0]
@@ -996,20 +950,20 @@ class ProcessingTab(Frame):
                     new_filename = f"{base_name}_v{counter}{ext}"
                     dest_path = path.join(skipped_folder, new_filename)
                     counter += 1
-            
+
             # Clear all PDF handles
             # 1. Clear the PDF viewer canvas
             if hasattr(self.pdf_viewer, "canvas"):
                 self.pdf_viewer.canvas.delete("all")
-            
+
             # 2. Clear the PDF viewer's cached image
             if hasattr(self.pdf_viewer, "current_image"):
                 self.pdf_viewer.current_image = None
-            
+
             # 3. Close any open PDF files in the PDF manager
             self.pdf_manager.clear_cache()  # Clear the cached PDF document
             self.pdf_manager.close_current_pdf()  # Close any other open PDFs
-            
+
             # Try to move the file with retries
             max_retries = 3
             retry_count = 0
@@ -1024,13 +978,13 @@ class ProcessingTab(Frame):
                     if retry_count == max_retries:
                         raise
                     time.sleep(0.5)  # Increased wait time between retries
-            
+
         except Exception as e:
             ErrorDialog(self, "Error", f"Failed to move skipped file: {str(e)}")
 
     def load_next_pdf(self, move_to_skipped: bool = False) -> None:
         """Load the next PDF file from the source folder.
-        
+
         Args:
             move_to_skipped: If True, moves current file to skipped folder before loading next.
         """
@@ -1051,12 +1005,13 @@ class ProcessingTab(Frame):
                     value2="",
                     value3="",
                     status="skipped",  # Set initial status as skipped
-                    start_time=self.current_pdf_start_time  # Use the start time from when PDF was loaded
+                    # Use the start time from when PDF was loaded
+                    start_time=self.current_pdf_start_time,
                 )
-                
+
                 # Add to queue as skipped (won't trigger processing)
                 self.pdf_queue.add_skipped_task(task)
-                
+
                 # Move the file to skipped folder
                 self._move_to_skipped_folder(current_file)
 
@@ -1073,15 +1028,17 @@ class ProcessingTab(Frame):
                 self.file_info["text"] = "Source folder not found"
                 self._update_status("Source folder does not exist")
                 ErrorDialog(
-                    self, "Error", f"Source folder not found: {config['source_folder']}"
+                    self,
+                    "Error",
+                    f"Source folder not found: {
+                        config['source_folder']}",
                 )
                 return
 
             # Get active tasks to avoid reloading files being processed
             active_tasks = {}
             with self.pdf_queue.lock:
-                active_tasks = {k: v for k, v in self.pdf_queue.tasks.items() 
-                              if v.status in ["pending", "processing"]}
+                active_tasks = {k: v for k, v in self.pdf_queue.tasks.items() if v.status in ["pending", "processing"]}
 
             next_pdf = self.pdf_manager.get_next_pdf(config["source_folder"], active_tasks)
             if next_pdf:
@@ -1122,8 +1079,11 @@ class ProcessingTab(Frame):
 
     def process_current_file(self) -> None:
         """Process the current PDF file with selected filters."""
-        print(f"[DEBUG] Starting process_current_file with PDF: {self.current_pdf}")
-        
+        print(
+            f"[DEBUG] Starting process_current_file with PDF: {
+              self.current_pdf}"
+        )
+
         if not self.current_pdf:
             print("[DEBUG] No PDF file loaded")
             self._update_status("No file loaded")
@@ -1133,8 +1093,14 @@ class ProcessingTab(Frame):
         if not path.exists(self.current_pdf):
             print(f"[DEBUG] File does not exist at path: {self.current_pdf}")
             self._update_status("File no longer exists")
-            ErrorDialog(self, "Error", f"File no longer exists: {self.current_pdf}")
-            self.load_next_pdf(move_to_skipped=False)  # Don't move to skipped if file doesn't exist
+            ErrorDialog(
+                self,
+                "Error",
+                f"File no longer exists: {
+                        self.current_pdf}",
+            )
+            # Don't move to skipped if file doesn't exist
+            self.load_next_pdf(move_to_skipped=False)
             return
 
         try:
@@ -1142,7 +1108,10 @@ class ProcessingTab(Frame):
             value1 = self.filter1_frame.get()
             value2_formatted = self.filter2_frame.get()
             value3 = self.filter3_frame.get()
-            print(f"[DEBUG] Filter values - filter1: {value1}, filter2_formatted: {value2_formatted}, filter3: {value3}")
+            print(
+                f"[DEBUG] Filter values - filter1: {value1}, filter2_formatted: {
+                  value2_formatted}, filter3: {value3}"
+            )
 
             if not value1 or not value2_formatted or not value3:
                 print("[DEBUG] Missing filter values")
@@ -1162,7 +1131,7 @@ class ProcessingTab(Frame):
                 config["filter3_column"],
                 value1,
                 value2,
-                value3
+                value3,
             )
             print(f"[DEBUG] Excel row found: {excel_row is not None}")
 
@@ -1174,7 +1143,7 @@ class ProcessingTab(Frame):
                 value1=value1,
                 value2=value2,
                 value3=value3,
-                row_idx=row_idx
+                row_idx=row_idx,
             )
             print(f"[DEBUG] Created task with ID: {task.task_id}")
 
@@ -1186,7 +1155,8 @@ class ProcessingTab(Frame):
             # Update status and load next file
             print("[DEBUG] Updating status and loading next file")
             self._update_status("File queued for processing")
-            self.load_next_pdf(move_to_skipped=False)  # Don't move to skipped since we're processing it
+            # Don't move to skipped since we're processing it
+            self.load_next_pdf(move_to_skipped=False)
 
             # Clear all filters
             print("[DEBUG] Clearing filters")
@@ -1205,6 +1175,7 @@ class ProcessingTab(Frame):
             print(f"[DEBUG] Error in process_current_file: {str(e)}")
             print("[DEBUG] Full traceback:")
             import traceback
+
             print(traceback.format_exc())
             self._update_status("Processing error")
             ErrorDialog(self, "Error", str(e))
@@ -1224,7 +1195,8 @@ class ProcessingTab(Frame):
                 ErrorDialog(
                     self,
                     "Processing Error",
-                    f"Error processing {path.basename(task_path)}:\n{task.error_msg}",
+                    f"Error processing {path.basename(task_path)}:\n{
+                        task.error_msg}",
                 )
 
     def _clear_completed(self) -> None:
@@ -1247,9 +1219,7 @@ class ProcessingTab(Frame):
                 completed = sum(1 for t in tasks.values() if t.status == "completed")
                 failed = sum(1 for t in tasks.values() if t.status == "failed")
                 skipped = sum(1 for t in tasks.values() if t.status == "skipped")
-                pending = sum(
-                    1 for t in tasks.values() if t.status in ["pending", "processing"]
-                )
+                pending = sum(1 for t in tasks.values() if t.status in ["pending", "processing"])
 
             # Update the display
             self.queue_display.update_display(tasks)
@@ -1257,7 +1227,8 @@ class ProcessingTab(Frame):
             # Update statistics display
             if total > 0:
                 self.queue_stats.configure(
-                    text=f"Queue: {total} total ({completed} completed, {failed} failed, {skipped} skipped, {pending} pending)"
+                    text=f"Queue: {total} total ({completed} completed, {failed} failed, {
+                        skipped} skipped, {pending} pending)"
                 )
             else:
                 self.queue_stats.configure(text="Queue: 0 total")
@@ -1271,9 +1242,7 @@ class ProcessingTab(Frame):
     def _periodic_update(self) -> None:
         """Periodically check for changes and update the queue display only if needed."""
         try:
-            if (
-                self.pdf_queue.check_and_clear_changes()
-            ):  # Only update if there were changes
+            if self.pdf_queue.check_and_clear_changes():  # Only update if there were changes
                 self.update_queue_display()
         except Exception as e:
             print(f"[DEBUG] Error in periodic update: {str(e)}")
@@ -1292,13 +1261,13 @@ class ProcessingTab(Frame):
         """Handle click on file info label to open file picker."""
         try:
             config = self.config_manager.get_config()
-            
+
             # Reload Excel data to ensure we have fresh data
             if config["excel_file"] and config["excel_sheet"]:
                 self.reload_excel_data_and_update_ui()
-                
+
             source_folder = config["source_folder"]
-            
+
             if not source_folder:
                 self._update_status("Source folder not configured")
                 return
@@ -1306,21 +1275,26 @@ class ProcessingTab(Frame):
             if not path.exists(source_folder):
                 self.file_info["text"] = "Source folder not found"
                 self._update_status("Source folder does not exist")
-                ErrorDialog(self, "Error", f"Source folder not found: {source_folder}")
+                ErrorDialog(
+                    self,
+                    "Error",
+                    f"Source folder not found: {
+                            source_folder}",
+                )
                 return
 
             file_path = filedialog.askopenfilename(
                 initialdir=source_folder,
                 title="Select PDF File",
-                filetypes=[("PDF files", "*.pdf")]
+                filetypes=[("PDF files", "*.pdf")],
             )
-            
+
             if file_path:
                 # Clear current PDF reference and set new one
                 self.current_pdf = None  # Clear first to prevent any state issues
                 self.current_pdf = file_path
                 self.current_pdf_start_time = datetime.now()  # Set start time when PDF is loaded
-                
+
                 # Update UI elements
                 self.file_info["text"] = path.basename(file_path)
                 self.pdf_viewer.display_pdf(file_path, 1)
@@ -1333,7 +1307,7 @@ class ProcessingTab(Frame):
                 self.filter3_frame.clear()
 
                 # Reset available values for dependent filters
-                if hasattr(self, 'all_values1'):
+                if hasattr(self, "all_values1"):
                     self.filter1_frame.set_values(self.all_values1)
 
                 # Focus the first fuzzy search entry
@@ -1343,12 +1317,12 @@ class ProcessingTab(Frame):
                 self.update_confirm_button()
 
                 self._update_status("New file loaded")
-                
+
         except Exception as e:
             print(f"[DEBUG] Error in _on_file_info_click:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading PDF: {str(e)}")
-            
+
             # Clear PDF viewer on error
             if hasattr(self.pdf_viewer, "canvas"):
                 self.pdf_viewer.canvas.delete("all")
