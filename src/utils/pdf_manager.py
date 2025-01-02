@@ -20,9 +20,6 @@ class PDFManager:
         self.current_file_list: List[str] = []
         self.cached_pdf: Optional[Any] = None
         self.cached_pdf_path: Optional[str] = None
-        self._cached_source_folder: Optional[str] = None
-        self._last_refresh_time: float = 0
-        self._refresh_interval: int = 5  # Refresh file list every 5 seconds
         self._network_timeout: int = 5  # 5 seconds timeout for network operations
         self._max_retries: int = 3  # Maximum number of retries for file operations
         self._retry_delay: int = 1  # Initial retry delay in seconds
@@ -215,35 +212,25 @@ class PDFManager:
             if not is_path_available(source_folder):
                 raise Exception("Network path is not available")
 
-            current_time = time()
-
-            # Only refresh file list if source folder changed or refresh interval passed
-            if (
-                source_folder != self._cached_source_folder
-                or current_time - self._last_refresh_time > self._refresh_interval
-            ):
-
-                # Get list of PDF files
+            # Get list of PDF files
+            try:
+                original_timeout = getdefaulttimeout()
+                setdefaulttimeout(self._network_timeout)
                 try:
-                    original_timeout = getdefaulttimeout()
-                    setdefaulttimeout(self._network_timeout)
-                    try:
-                        pdf_files = sorted(
-                            [
-                                f
-                                for f in os_listdir(source_folder)
-                                if f.lower().endswith(".pdf")
-                            ]
-                        )
-                        self.current_file_list = pdf_files
-                        self._cached_source_folder = source_folder
-                        self._last_refresh_time = current_time
-                    finally:
-                        setdefaulttimeout(original_timeout)
-                except Exception as e:
-                    if isinstance(e, SocketTimeout):
-                        raise Exception("Network timeout while accessing PDF folder")
-                    raise Exception(f"Error reading source folder: {str(e)}")
+                    pdf_files = sorted(
+                        [
+                            f
+                            for f in os_listdir(source_folder)
+                            if f.lower().endswith(".pdf")
+                        ]
+                    )
+                    self.current_file_list = pdf_files
+                finally:
+                    setdefaulttimeout(original_timeout)
+            except Exception as e:
+                if isinstance(e, SocketTimeout):
+                    raise Exception("Network timeout while accessing PDF folder")
+                raise Exception(f"Error reading source folder: {str(e)}")
 
             # If no PDF files found
             if not self.current_file_list:
@@ -264,9 +251,7 @@ class PDFManager:
                 # Clear cache if different file
                 if next_pdf != self.cached_pdf_path:
                     self.clear_cache()
-                    self.current_rotation = (
-                        0  # Reset rotation when moving to a new file
-                    )
+                    self.current_rotation = 0  # Reset rotation when moving to a new file
                 return next_pdf
 
             return None
