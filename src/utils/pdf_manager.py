@@ -117,7 +117,8 @@ class PDFManager:
             raise Exception(f"Error generating output path: {str(e)}")
 
         # Ensure we're not holding the file open
-        self.ensure_pdf_not_cached(task.pdf_path)
+        if self.cached_pdf_path == task.pdf_path:
+            self.clear_cache()
 
         retry_count = 0
         delay = self._retry_delay
@@ -170,13 +171,7 @@ class PDFManager:
                         # Explicitly remove the source file after successful move
                         remove(task.pdf_path)
 
-                        # Reset rotation after successful processing
-                        if self.current_rotation != 0:
-                            doc = fitz_open(new_filepath)
-                            page = doc[0]  # Assuming single page PDFs
-                            page.set_rotation(0)  # Explicitly set rotation to 0
-                            doc.save(new_filepath)
-                            doc.close()
+                        # Reset rotation tracking
                         self.current_rotation = 0
                         return True
 
@@ -266,11 +261,6 @@ class PDFManager:
             self.cached_pdf = None
             self.cached_pdf_path = None
 
-    def ensure_pdf_not_cached(self, pdf_path):
-        """Ensure that the PDF is not cached if it matches the given path."""
-        if self.cached_pdf_path == pdf_path:
-            self.clear_cache()
-
     def rotate_page(self, clockwise=True):
         """Rotate the current PDF page clockwise or counterclockwise by 90 degrees."""
         if clockwise:
@@ -306,10 +296,23 @@ class PDFManager:
 
             # Calculate matrix with optimized settings for scanned PDFs
             base_dpi = 72  # Base DPI for PDF
-            quality_multiplier = 2 if zoom > 1.0 else 1  # Higher quality when zoomed in
+            target_dpi = 144  # Target DPI for better quality
+            dpi_scale = target_dpi / base_dpi
+            
+            # Calculate quality multiplier based on zoom level
+            # Smoothly increase quality as zoom increases
+            if zoom <= 1.0:
+                quality_multiplier = 1.0
+            else:
+                # Gradually increase quality up to 1.5x for zooms up to 2.0
+                # Beyond 2.0x zoom, maintain 1.5x quality
+                quality_multiplier = min(1.0 + (zoom - 1.0) * 0.5, 1.5)
+            
+            # Final zoom calculation incorporating DPI scaling and quality multiplier
+            effective_zoom = zoom * (dpi_scale * quality_multiplier)
 
             # Create matrix with optimal settings for scanned documents and rotation
-            zoom_matrix = Matrix(zoom * quality_multiplier, zoom * quality_multiplier)
+            zoom_matrix = Matrix(effective_zoom, effective_zoom)
             if self.current_rotation:
                 zoom_matrix.prerotate(self.current_rotation)
 
