@@ -16,6 +16,7 @@ from socket import (
 from typing import Optional, List, Tuple, Union
 from time import sleep
 from random import uniform
+import pandas as pd
 
 
 
@@ -195,29 +196,32 @@ class ExcelManager:
             return
 
         print(f"[DEBUG] Loading hyperlink information for column {column_name}")
-        wb = load_workbook(excel_file, data_only=True)
-        ws = wb[sheet_name]
-        df_cols = read_excel(excel_file, sheet_name=sheet_name, nrows=0)
+        try:
+            wb = load_workbook(excel_file, data_only=True)
+            ws = wb[sheet_name]
+            df_cols = read_excel(excel_file, sheet_name=sheet_name, nrows=0)
 
-        # Find the target column
-        if column_name not in df_cols.columns:
+            # Find the target column
+            if column_name not in df_cols.columns:
+                wb.close()
+                return
+
+            target_col = df_cols.columns.get_loc(column_name) + 1
+
+            # Clear existing cache
+            self._hyperlink_cache = {}
+
+            # Cache hyperlink information only for the target column
+            for idx in range(len(self.excel_data)):
+                cell = ws.cell(
+                    row=idx + 2, column=target_col
+                )  # +2 for header and 1-based indexing
+                self._hyperlink_cache[idx] = cell.hyperlink is not None
+
             wb.close()
-            return
-
-        target_col = df_cols.columns.get_loc(column_name) + 1
-
-        # Clear existing cache
-        self._hyperlink_cache = {}
-
-        # Cache hyperlink information only for the target column
-        for idx in range(len(self.excel_data)):
-            cell = ws.cell(
-                row=idx + 2, column=target_col
-            )  # +2 for header and 1-based indexing
-            self._hyperlink_cache[idx] = cell.hyperlink is not None
-
-        wb.close()
-        print(f"[DEBUG] Hyperlink information cached for column {column_name}")
+            print(f"[DEBUG] Hyperlink information cached for column {column_name}")
+        except Exception as e:
+            print(f"[DEBUG] Error caching hyperlink information: {str(e)}")
 
     @retry_with_backoff
     def update_pdf_link(
@@ -534,3 +538,71 @@ class ExcelManager:
             bool: True if the row has any hyperlinks, False otherwise
         """
         return self._hyperlink_cache.get(row_idx, False)
+
+    @retry_with_backoff
+    def add_new_row(
+        self,
+        excel_file: str,
+        sheet_name: str,
+        filter1_col: str,
+        filter2_col: str,
+        filter3_col: str,
+        value1: str,
+        value2: str,
+        value3: str
+    ) -> Tuple[Series, int]:
+        """Add a new row to Excel when no matching row is found.
+        
+        Args:
+            excel_file: Path to the Excel file
+            sheet_name: Name of the sheet
+            filter1_col, filter2_col, filter3_col: Column names for filters
+            value1, value2, value3: Values for the filters
+            
+        Returns:
+            Tuple[Series, int]: The new row data and its index
+        """
+        if not is_path_available(excel_file):
+            raise FileNotFoundError(f"Excel file not found or not accessible: {excel_file}")
+
+        # Create backup of current data
+        current_data = self.excel_data.copy()
+        
+        # Create new row data
+        new_row = {}
+        for col in self.excel_data.columns:
+            new_row[col] = None
+        
+        # Set filter values
+        new_row[filter1_col] = value1
+        new_row[filter2_col] = value2
+        new_row[filter3_col] = value3
+        
+        # Convert to Series for consistent data types
+        row_data = Series(new_row)
+        
+        # Get the new row index (0-based)
+        new_row_idx = len(current_data)
+        
+        try:
+            # Load workbook for editing
+            wb = load_workbook(excel_file)
+            ws = wb[sheet_name]
+            
+            # Add to Excel worksheet (Excel is 1-based and has header)
+            row_values = [new_row[col] for col in self.excel_data.columns]
+            ws.append(row_values)
+            
+            # Save workbook
+            wb.save(excel_file)
+            wb.close()
+            
+            # Update the internal DataFrame
+            self.excel_data = pd.concat([self.excel_data, DataFrame([new_row])], ignore_index=True)
+            
+            print(f"[DEBUG] Added new row to Excel at index {new_row_idx} (Excel row {new_row_idx + 2})")
+            return row_data, new_row_idx
+            
+        except Exception as e:
+            print(f"[DEBUG] Error adding new row to Excel: {str(e)}")
+            raise

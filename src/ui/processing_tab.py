@@ -176,7 +176,7 @@ class ProcessingQueue:
                 excel_manager.load_excel_data(
                     config["excel_file"], config["excel_sheet"]
                 )
-                row_data, _ = excel_manager.find_matching_row(
+                row_data, row_idx = excel_manager.find_matching_row(
                     config["filter1_column"],
                     config["filter2_column"],
                     config["filter3_column"],
@@ -184,6 +184,37 @@ class ProcessingQueue:
                     task_to_process.value2,
                     task_to_process.value3,
                 )
+
+                # If no matching row found, create a new one
+                if row_data is None:
+                    try:
+                        row_data, row_idx = excel_manager.add_new_row(
+                            config["excel_file"],
+                            config["excel_sheet"],
+                            config["filter1_column"],
+                            config["filter2_column"],
+                            config["filter3_column"],
+                            task_to_process.value1,
+                            task_to_process.value2,
+                            task_to_process.value3,
+                        )
+                        # Update task with new row index
+                        task_to_process.row_idx = row_idx
+                        print(f"[DEBUG] Added new row with index: {row_idx}")
+                        
+                        # Reload Excel data after adding new row
+                        time.sleep(0.5)  # Give the file system time to finish writing
+                        excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
+                        
+                    except Exception as e:
+                        task_to_process.status = "failed"
+                        task_to_process.error_msg = f"Failed to create new row: {str(e)}"
+                        self.mark_changed()
+                        continue
+                else:
+                    # Update task with found row index
+                    task_to_process.row_idx = row_idx
+                    print(f"[DEBUG] Using existing row with index: {row_idx}")
 
                 # Define date formats as a constant
                 DATE_FORMATS = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d"]
@@ -199,27 +230,34 @@ class ProcessingQueue:
                 # Process all columns in one pass
                 for column in row_data.index:
                     value = row_data[column]
-                    template_data[column] = value
+                    
+                    # Handle any column that might contain dates
+                    if "DATE" in column.upper():
+                        if pd.isnull(value):
+                            template_data[column] = None
+                        elif isinstance(value, datetime):
+                            template_data[column] = value
+                        else:
+                            # Try to parse the date string
+                            parsed_date = None
+                            for date_format in DATE_FORMATS:
+                                try:
+                                    parsed_date = datetime.strptime(str(value).strip(), date_format)
+                                    break
+                                except ValueError:
+                                    continue
+                            
+                            if parsed_date is None:
+                                raise ValueError(f"Could not parse date '{value}' in column '{column}'")
+                            
+                            template_data[column] = parsed_date
+                    else:
+                        template_data[column] = value
 
-                    if "DATE" not in column.upper() or pd.isnull(value):
-                        continue
-
-                    if isinstance(value, datetime):
-                        continue
-
-                    for date_format in DATE_FORMATS:
-                        try:
-                            template_data[column] = datetime.strptime(
-                                str(value), date_format
-                            )
-                            break
-                        except ValueError:
-                            continue
-                        except Exception as e:
-                            print(
-                                f"[DEBUG] Failed to parse date in column {column}: {str(e)}"
-                            )
-                            break
+                print("[DEBUG] Template data for dates:")
+                for col, val in template_data.items():
+                    if "DATE" in col.upper():
+                        print(f"[DEBUG] {col}: {val} (type: {type(val)})")
 
                 # Add processed_folder to template data and process PDF
                 template_data["processed_folder"] = config["processed_folder"]

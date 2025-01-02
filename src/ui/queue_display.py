@@ -415,8 +415,8 @@ class QueueDisplay(ttkFrame):
             processing_tab = self._get_processing_tab()
             if processing_tab and task_id:
                 task = processing_tab.pdf_queue.get_task_by_id(task_id)
-                if task and task.error_message:
-                    error_msg = task.error_message
+                if task and task.error_msg:
+                    error_msg = task.error_msg
 
             ttkLabel(frame, text=error_msg, wraplength=250).grid(
                 row=len(details) + 1, column=0, columnspan=2, sticky="w", pady=(0, 10)

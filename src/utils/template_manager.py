@@ -136,9 +136,26 @@ class TemplateManager:
         result = value
         for operation in operations:
             if operation.startswith('date.'):
-                if not isinstance(value, datetime):
-                    raise ValueError(f"Date operations can only be applied to datetime objects: {value}")
-                result = self._apply_date_operation(value, operation)
+                # If it's already a datetime object, use it directly
+                if isinstance(value, datetime):
+                    result = self._apply_date_operation(value, operation)
+                # Otherwise try to parse it if it's a string
+                elif isinstance(value, str):
+                    try:
+                        # Try to parse the date string in common formats
+                        for fmt in ['%d_%m_%Y', '%Y-%m-%d', '%d/%m/%Y']:
+                            try:
+                                parsed_date = datetime.strptime(value, fmt)
+                                result = self._apply_date_operation(parsed_date, operation)
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            raise ValueError(f"Could not parse date string: {value}")
+                    except Exception as e:
+                        raise ValueError(f"Could not convert string to date: {value} - {str(e)}")
+                else:
+                    raise ValueError(f"Date operations can only be applied to datetime objects or date strings: {value}")
             elif operation.startswith('str.'):
                 result = self._apply_string_operation(str(result), operation)
             else:
