@@ -1077,7 +1077,13 @@ class ProcessingTab(Frame):
                 )
                 return
 
-            next_pdf = self.pdf_manager.get_next_pdf(config["source_folder"])
+            # Get active tasks to avoid reloading files being processed
+            active_tasks = {}
+            with self.pdf_queue.lock:
+                active_tasks = {k: v for k, v in self.pdf_queue.tasks.items() 
+                              if v.status in ["pending", "processing"]}
+
+            next_pdf = self.pdf_manager.get_next_pdf(config["source_folder"], active_tasks)
             if next_pdf:
                 self.current_pdf = next_pdf
                 self.current_pdf_start_time = datetime.now()  # Set start time when PDF is loaded
@@ -1116,68 +1122,90 @@ class ProcessingTab(Frame):
 
     def process_current_file(self) -> None:
         """Process the current PDF file with selected filters."""
+        print(f"[DEBUG] Starting process_current_file with PDF: {self.current_pdf}")
+        
         if not self.current_pdf:
+            print("[DEBUG] No PDF file loaded")
             self._update_status("No file loaded")
             ErrorDialog(self, "Error", "No PDF file loaded")
             return
 
         if not path.exists(self.current_pdf):
+            print(f"[DEBUG] File does not exist at path: {self.current_pdf}")
             self._update_status("File no longer exists")
             ErrorDialog(self, "Error", f"File no longer exists: {self.current_pdf}")
             self.load_next_pdf(move_to_skipped=False)  # Don't move to skipped if file doesn't exist
             return
 
         try:
+            print("[DEBUG] Getting filter values")
             value1 = self.filter1_frame.get()
             value2_formatted = self.filter2_frame.get()
             value3 = self.filter3_frame.get()
+            print(f"[DEBUG] Filter values - filter1: {value1}, filter2_formatted: {value2_formatted}, filter3: {value3}")
 
             if not value1 or not value2_formatted or not value3:
+                print("[DEBUG] Missing filter values")
                 self._update_status("Select all filters")
                 return
 
             # Parse the actual value and row index from the formatted filter2 value
             value2, row_idx = self._parse_filter2_value(value2_formatted)
+            print(f"[DEBUG] Parsed filter2 - value: {value2}, row_idx: {row_idx}")
 
             # Verify the combination exists in Excel
+            print("[DEBUG] Verifying filter combination in Excel")
             config = self.config_manager.get_config()
-            self.excel_manager.find_matching_row(
+            excel_row = self.excel_manager.find_matching_row(
                 config["filter1_column"],
                 config["filter2_column"],
                 config["filter3_column"],
                 value1,
                 value2,
-                value3,
+                value3
             )
+            print(f"[DEBUG] Excel row found: {excel_row is not None}")
+
             # Create task using the parsed values
+            print(f"[DEBUG] Creating PDF task for file: {self.current_pdf}")
             task = PDFTask(
                 task_id=PDFTask.generate_id(),
                 pdf_path=self.current_pdf,
                 value1=value1,
                 value2=value2,
                 value3=value3,
-                row_idx=row_idx,
+                row_idx=row_idx
             )
+            print(f"[DEBUG] Created task with ID: {task.task_id}")
 
             # Add to processing queue (this will mark changes and trigger update)
+            print("[DEBUG] Adding task to processing queue")
             self.pdf_queue.add_task(task)
+            print("[DEBUG] Task added to queue successfully")
 
             # Update status and load next file
+            print("[DEBUG] Updating status and loading next file")
             self._update_status("File queued for processing")
             self.load_next_pdf(move_to_skipped=False)  # Don't move to skipped since we're processing it
 
             # Clear all filters
+            print("[DEBUG] Clearing filters")
             self.filter1_frame.clear()
             self.filter2_frame.clear()
             self.filter3_frame.clear()
 
             # Reset available values for dependent filters
+            print("[DEBUG] Resetting filter values")
             self.filter1_frame.set_values(self.all_values1)
 
             # Focus the first fuzzy search entry
             self.filter1_frame.entry.focus_set()
 
         except Exception as e:
+            print(f"[DEBUG] Error in process_current_file: {str(e)}")
+            print("[DEBUG] Full traceback:")
+            import traceback
+            print(traceback.format_exc())
             self._update_status("Processing error")
             ErrorDialog(self, "Error", str(e))
 

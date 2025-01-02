@@ -97,10 +97,15 @@ class PDFManager:
         output_template: str,
     ) -> bool:
         """Process a PDF file using template-based naming."""
+        print(f"[DEBUG] Starting PDF processing for file: {task.pdf_path}")
+        print(f"[DEBUG] File exists check: {path.exists(task.pdf_path)}")
+        
         if not path.exists(task.pdf_path):
+            print(f"[DEBUG] PDF not found at path: {task.pdf_path}")
             raise Exception("Source PDF file not found")
 
         if not path.exists(processed_folder):
+            print(f"[DEBUG] Creating processed folder: {processed_folder}")
             makedirs(processed_folder)
 
         # Add processed_folder to template data
@@ -108,16 +113,21 @@ class PDFManager:
 
         # Generate new filepath using template
         try:
+            print("[DEBUG] Generating output path using template")
             new_filepath = self.generate_output_path(output_template, template_data)
+            print(f"[DEBUG] Generated output path: {new_filepath}")
             
             # Store the processed_pdf_location in the task object if provided
             if task is not None:
                 task.processed_pdf_location = new_filepath
+                print(f"[DEBUG] Updated task processed_pdf_location: {new_filepath}")
         except Exception as e:
+            print(f"[DEBUG] Error generating output path: {str(e)}")
             raise Exception(f"Error generating output path: {str(e)}")
 
         # Ensure we're not holding the file open
         if self.cached_pdf_path == task.pdf_path:
+            print("[DEBUG] Clearing PDF cache before processing")
             self.clear_cache()
 
         retry_count = 0
@@ -125,84 +135,113 @@ class PDFManager:
 
         while retry_count < self._max_retries:
             try:
+                print(f"[DEBUG] Processing attempt {retry_count + 1} of {self._max_retries}")
                 # Create temporary directory for atomic operations
                 with TemporaryDirectory() as temp_dir:
+                    print(f"[DEBUG] Created temp directory: {temp_dir}")
                     temp_pdf = path.join(temp_dir, "original.pdf")
                     rotated_pdf = path.join(temp_dir, "rotated.pdf")
 
                     # Try to copy with multiple retries
                     copy_success = False
-                    for _ in range(3):
+                    for attempt in range(3):
                         try:
+                            print(f"[DEBUG] Copying file attempt {attempt + 1}: {task.pdf_path} -> {temp_pdf}")
                             copy2(task.pdf_path, temp_pdf)
                             copy_success = True
+                            print("[DEBUG] File copy successful")
                             break
-                        except PermissionError:
+                        except PermissionError as pe:
+                            print(f"[DEBUG] Permission error during copy: {str(pe)}")
                             sleep(delay)
 
                     if not copy_success:
+                        print("[DEBUG] Failed to copy file after all attempts")
                         raise Exception(
                             "Failed to create backup copy after multiple attempts"
                         )
 
                     # Apply rotation if needed
                     if self.current_rotation != 0:
+                        print(f"[DEBUG] Applying rotation: {self.current_rotation} degrees")
                         doc = fitz_open(temp_pdf)
                         page = doc[0]  # Assuming single page PDFs
                         page.set_rotation(self.current_rotation)
                         doc.save(rotated_pdf)
                         doc.close()
                         temp_pdf = rotated_pdf
+                        print("[DEBUG] Rotation applied successfully")
 
                     try:
                         # Ensure target directory exists
-                        makedirs(path.dirname(new_filepath), exist_ok=True)
+                        target_dir = path.dirname(new_filepath)
+                        print(f"[DEBUG] Creating target directory: {target_dir}")
+                        makedirs(target_dir, exist_ok=True)
 
                         # Try to move the file
                         if path.exists(new_filepath):
+                            print(f"[DEBUG] Removing existing file at target: {new_filepath}")
                             remove(new_filepath)
 
+                        print(f"[DEBUG] Moving file: {temp_pdf} -> {new_filepath}")
                         # Use windows-specific move operation
                         MoveFileEx(
                             temp_pdf,
                             new_filepath,
                             MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED,
                         )
+                        print("[DEBUG] File moved successfully")
+
+                        print(f"[DEBUG] Removing original file: {task.pdf_path}")
                         # Explicitly remove the source file after successful move
                         remove(task.pdf_path)
+                        print("[DEBUG] Original file removed successfully")
 
                         # Reset rotation tracking
                         self.current_rotation = 0
                         return True
 
                     except Exception as move_error:
+                        print(f"[DEBUG] Error during move operation: {str(move_error)}")
                         # Restore file from backup if operation fails
                         if path.exists(new_filepath):
                             try:
+                                print(f"[DEBUG] Cleaning up failed target file: {new_filepath}")
                                 remove(new_filepath)
-                            except:
-                                pass
+                            except Exception as cleanup_error:
+                                print(f"[DEBUG] Failed to clean up target file: {str(cleanup_error)}")
+                        print("[DEBUG] Restoring original file from backup")
                         copy2(temp_pdf, task.pdf_path)
                         raise move_error
 
             except (PermissionError, OSError) as e:
                 retry_count += 1
+                print(f"[DEBUG] Operation error (attempt {retry_count}): {str(e)}")
                 if retry_count >= self._max_retries:
+                    print("[DEBUG] Maximum retries reached")
                     raise Exception(
                         f"Failed to process PDF after {self._max_retries} attempts: {str(e)}"
                     )
 
+                print(f"[DEBUG] Retrying after {delay} seconds")
                 # Exponential backoff
                 sleep(delay)
                 delay *= 2
             except Exception as e:
+                print(f"[DEBUG] Unexpected error: {str(e)}")
                 # Don't retry other types of errors
                 raise Exception(f"Error processing PDF: {str(e)}")
 
+        print("[DEBUG] Failed to process PDF after exhausting all retries")
         raise Exception("Failed to process PDF after exhausting all retries")
 
-    def get_next_pdf(self, source_folder: str) -> Optional[str]:
-        """Get the next PDF file from the source folder."""
+    def get_next_pdf(self, source_folder: str, active_tasks: Dict[str, PDFTask] = None) -> Optional[str]:
+        """Get the next PDF file from the source folder.
+        
+        Args:
+            source_folder: The folder to scan for PDFs
+            active_tasks: Dictionary of currently active tasks to avoid reloading files being processed
+        """
         try:
             if not is_path_available(source_folder):
                 raise Exception("Network path is not available")
@@ -212,13 +251,25 @@ class PDFManager:
                 original_timeout = getdefaulttimeout()
                 setdefaulttimeout(self._network_timeout)
                 try:
-                    pdf_files = sorted(
-                        [
-                            f
-                            for f in os_listdir(source_folder)
-                            if f.lower().endswith(".pdf")
-                        ]
-                    )
+                    # Get all PDF files
+                    all_pdf_files = sorted([
+                        f for f in os_listdir(source_folder)
+                        if f.lower().endswith(".pdf")
+                    ])
+                    
+                    # Filter out files that are currently being processed
+                    if active_tasks:
+                        active_files = set()
+                        for task in active_tasks.values():
+                            if task.status in ["pending", "processing"]:
+                                active_file = path.basename(task.pdf_path)
+                                active_files.add(active_file)
+                        
+                        pdf_files = [f for f in all_pdf_files if f not in active_files]
+                        print(f"[DEBUG] Filtered out {len(all_pdf_files) - len(pdf_files)} active files from next file selection")
+                    else:
+                        pdf_files = all_pdf_files
+                    
                     self.current_file_list = pdf_files
                 finally:
                     setdefaulttimeout(original_timeout)
