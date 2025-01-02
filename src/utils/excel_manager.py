@@ -1,9 +1,10 @@
-from pandas import read_excel, ExcelFile, DataFrame, Series
+from pandas import read_excel, ExcelFile, DataFrame, Series, to_datetime
+from pandas.api.types import is_datetime64_any_dtype
 from openpyxl import load_workbook
 from openpyxl.worksheet.hyperlink import Hyperlink
 from openpyxl.styles import Font
 from shutil import copy2
-from os import path, remove
+from os import path
 from socket import (
     socket,
     AF_INET,
@@ -15,7 +16,7 @@ from socket import (
 from typing import Optional, List, Tuple, Union
 from time import sleep
 from random import uniform
-import pandas as pd
+
 
 
 def is_path_available(filepath: str, timeout: int = 2) -> bool:
@@ -141,9 +142,7 @@ class ExcelManager:
                 current_modified = path.getmtime(excel_file)
             except (OSError, PermissionError) as e:
                 print(f"[DEBUG] Failed to get file modification time: {str(e)}")
-                current_modified = (
-                    None  # Handle network/permission errors for file stat
-                )
+                current_modified = None  # Handle network/permission errors for file stat
                 # Force reload since we can't verify modification time
                 self.excel_data = None
                 self._cached_file = None
@@ -258,12 +257,11 @@ class ExcelManager:
         original_hyperlink = None
 
         try:
-            # Load the workbook and sheet
-            wb = load_workbook(excel_file)
+            # Load workbook with data_only=False to preserve all formulas in the workbook
+            wb = load_workbook(excel_file, data_only=False)
             ws = wb[sheet_name]
 
             # Identify the column index for filter2_col
-            # Assuming headers are in the first row
             header = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
             if filter2_col not in header:
                 raise ValueError(
@@ -277,10 +275,8 @@ class ExcelManager:
             # Capture the original hyperlink
             if cell.hyperlink:
                 original_hyperlink = cell.hyperlink.target
-            else:
-                original_hyperlink = None
 
-            # Create a backup copy if not already done
+            # Create a backup copy
             if not backup_created:
                 backup_file = f"{excel_file}.bak"
                 copy2(excel_file, backup_file)
@@ -298,11 +294,9 @@ class ExcelManager:
                 ref=cell.coordinate,
                 target=relative_pdf_path,
             )
-            cell.font = Font(
-                underline="single", color="0000FF"
-            )  # Blue, underlined text
+            cell.font = Font(underline="single", color="0000FF")
 
-            # Save and close
+            # Save the workbook
             print("[DEBUG] Saving workbook")
             wb.save(excel_file)
             print(
@@ -310,6 +304,7 @@ class ExcelManager:
             )
 
             return original_hyperlink
+
         except Exception as e:
             print(f"[DEBUG] Error in update_pdf_link: {str(e)}")
             # Restore from backup if something went wrong
@@ -330,6 +325,64 @@ class ExcelManager:
 
         finally:
             # Clean up
+            if wb:
+                wb.close()
+
+    @retry_with_backoff
+    def revert_pdf_link(
+        self,
+        excel_file: str,
+        sheet_name: str,
+        row_idx: int,
+        filter2_col: str,
+        original_hyperlink: str,
+        original_value: str,
+    ) -> None:
+        """Revert the Excel cell's hyperlink and value to its original state."""
+        try:
+            print(f"[DEBUG] Attempting to revert Excel cell at row {row_idx}, column {filter2_col}")
+            
+            # Load workbook with data_only=False to preserve all formulas in the workbook
+            wb = load_workbook(excel_file, data_only=False)
+            ws = wb[sheet_name]
+            
+            # Map headers to column indices (1-based)
+            header = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
+            if filter2_col not in header:
+                raise ValueError(f"Column '{filter2_col}' not found in sheet '{sheet_name}'")
+            col_idx = header[filter2_col]
+            
+            # Get the cell to update
+            cell = ws.cell(row=row_idx + 2, column=col_idx)  # +2 for header and 1-based indexing
+            
+            # Clear existing hyperlink
+            if cell.hyperlink:
+                cell.hyperlink = None
+            
+            # Reset the cell value
+            cell.value = original_value
+            
+            if original_hyperlink:
+                # If there was an original hyperlink, restore it and keep hyperlink style
+                cell.hyperlink = Hyperlink(
+                    ref=cell.coordinate,
+                    target=original_hyperlink
+                )
+                cell.font = Font(underline="single", color="0000FF")
+                print(f"[DEBUG] Restored hyperlink and style: {original_hyperlink}")
+            else:
+                # If there was no original hyperlink, clear the hyperlink style
+                cell.font = Font()
+                print("[DEBUG] Cleared hyperlink style")
+            
+            # Save the workbook
+            wb.save(excel_file)
+            print(f"[DEBUG] Successfully reverted Excel cell")
+            
+        except Exception as e:
+            print(f"[DEBUG] Error reverting Excel cell: {str(e)}")
+            raise Exception(f"Failed to revert Excel cell: {str(e)}")
+        finally:
             if wb:
                 wb.close()
 
@@ -379,7 +432,7 @@ class ExcelManager:
             (filter2_col, value2),
             (filter3_col, value3),
         ]:
-            if pd.api.types.is_datetime64_any_dtype(df[col]):
+            if is_datetime64_any_dtype(df[col]):
                 print(f"[DEBUG] Column {col} is datetime type")
                 # Keep datetime type for the column
                 continue
@@ -401,15 +454,15 @@ class ExcelManager:
         )
 
         # Create the mask for each condition and combine them
-        def create_mask(col: str, value: str) -> pd.Series:
-            if pd.api.types.is_datetime64_any_dtype(df[col]):
+        def create_mask(col: str, value: str) -> Series:
+            if is_datetime64_any_dtype(df[col]):
                 try:
                     # Try parsing the value as datetime for datetime columns
-                    parsed_date = pd.to_datetime(value)
+                    parsed_date = to_datetime(value)
                     return df[col].dt.date == parsed_date.date()
                 except Exception as e:
                     print(f"[DEBUG] Failed to parse date for {col}: {str(e)}")
-                    return pd.Series(False, index=df.index)
+                    return Series(False, index=df.index)
             else:
                 return df[col] == value
 
@@ -481,64 +534,3 @@ class ExcelManager:
             bool: True if the row has any hyperlinks, False otherwise
         """
         return self._hyperlink_cache.get(row_idx, False)
-
-    @retry_with_backoff
-    def revert_pdf_link(
-        self,
-        excel_file: str,
-        sheet_name: str,
-        row_idx: int,
-        filter2_col: str,
-        original_hyperlink: str,
-        original_value: str,
-    ) -> None:
-        """Revert the Excel cell's hyperlink and value to its original state.
-
-        Args:
-            excel_file (str): Path to the Excel file
-            sheet_name (str): Name of the worksheet
-            row_idx (int): Row index to update
-            filter2_col (str): Column name for filter2
-            original_hyperlink (str): Original hyperlink to restore
-            original_value (str): Original cell value to restore
-        """
-        try:
-            print(f"[DEBUG] Attempting to revert Excel cell at row {row_idx}, column {filter2_col}")
-            
-            # Open workbook with data_only=False to modify formulas/links
-            wb = load_workbook(excel_file, data_only=False)
-            ws = wb[sheet_name]
-            
-            # Map headers to column indices (1-based)
-            header = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
-            if filter2_col not in header:
-                raise ValueError(f"Column '{filter2_col}' not found in sheet '{sheet_name}'")
-            col_idx = header[filter2_col]
-            
-            # Get the cell to update
-            cell = ws.cell(row=row_idx + 2, column=col_idx)  # +2 for header and 1-based indexing
-            
-            # Clear existing hyperlink
-            if cell.hyperlink:
-                cell.hyperlink = None
-            
-            # Reset the cell value
-            cell.value = original_value
-            
-            if original_hyperlink:
-                # If there was an original hyperlink, restore it and keep hyperlink style
-                cell.hyperlink = original_hyperlink
-                cell.font = Font(underline="single", color="0000FF")  # Blue, underlined text
-                print(f"[DEBUG] Restored hyperlink and style: {original_hyperlink}")
-            else:
-                # If there was no original hyperlink, clear the hyperlink style
-                cell.font = Font()  # Default font style
-                print("[DEBUG] Cleared hyperlink style")
-            
-            # Save the workbook
-            wb.save(excel_file)
-            print(f"[DEBUG] Successfully reverted Excel cell")
-            
-        except Exception as e:
-            print(f"[DEBUG] Error reverting Excel cell: {str(e)}")
-            raise Exception(f"Failed to revert Excel cell: {str(e)}")

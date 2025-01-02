@@ -1,60 +1,40 @@
 from __future__ import annotations
 from tkinter import (
-    Canvas,
-    END,
+    END as TkEND,
     Event as TkEvent,
-    Widget,
-    Toplevel,
-    Frame as TkFrame,
-    messagebox,
-    Menu,
+    Widget as TkWidget,
 )
 from tkinter.ttk import (
     Frame,
-    Scrollbar,
     Label,
     Button,
     Style,
     LabelFrame,
-    Treeview,
 )
-from PIL.ImageTk import PhotoImage as PILPhotoImage
-from os import path, remove, makedirs
+
+from os import path, makedirs, remove
+from shutil import copy2
 from typing import Optional, Any, Dict, List, Callable
 from threading import Thread, Lock, Event
-from dataclasses import dataclass
 from .fuzzy_search import FuzzySearchFrame
 from .error_dialog import ErrorDialog
 from datetime import datetime
 import pandas as pd
-from openpyxl import load_workbook
-from ..utils import ConfigManager, ExcelManager, PDFManager
-
-
-# Data Models
-@dataclass
-class PDFTask:
-    task_id: str  # Unique identifier for the task
-    pdf_path: str
-    value1: str
-    value2: str
-    value3: str
-    status: str = "pending"  # pending, processing, failed, completed
-    error_msg: str = ""
-    row_idx: int = -1  # Add row index field
-    original_excel_hyperlink: Optional[str] = None  # New field to store original hyperlink
-    original_pdf_location: Optional[str] = None  # New field to store original PDF path
-
-    @staticmethod
-    def generate_id() -> str:
-        """Generate a unique task ID."""
-        from uuid import uuid4
-        return str(uuid4())
+from ..utils import ConfigManager, ExcelManager, PDFManager, PDFTask
+from .queue_display import QueueDisplay
+from .pdf_viewer import PDFViewer
+import traceback
+import time
 
 
 # Queue Management
 class ProcessingQueue:
-    def __init__(self, config_manager: ConfigManager, excel_manager: ExcelManager, pdf_manager: PDFManager):
+    def __init__(
+        self,
+        config_manager: ConfigManager,
+        excel_manager: ExcelManager,
+        pdf_manager: PDFManager,
+    ):
         self.tasks: Dict[str, PDFTask] = {}
         self.lock = Lock()
         self.processing_thread: Optional[Thread] = None
@@ -97,7 +77,7 @@ class ProcessingQueue:
                     task_to_update = task
                     self.has_changes = True
                     break
-        
+
         # Notify outside the lock if we found and updated the task
         if task_to_update:
             self._notify_status_change()
@@ -119,7 +99,9 @@ class ProcessingQueue:
     def clear_completed(self) -> None:
         """Clear completed tasks from the queue."""
         with self.lock:
-            self.tasks = {k: v for k, v in self.tasks.items() if v.status != "completed"}
+            self.tasks = {
+                k: v for k, v in self.tasks.items() if v.status != "completed"
+            }
         self.mark_changed()
 
     def retry_failed(self) -> None:
@@ -206,21 +188,25 @@ class ProcessingQueue:
                 for column in row_data.index:
                     value = row_data[column]
                     template_data[column] = value
-                    
+
                     if "DATE" not in column.upper() or pd.isnull(value):
                         continue
 
                     if isinstance(value, datetime):
                         continue
-                            
+
                     for date_format in DATE_FORMATS:
                         try:
-                            template_data[column] = datetime.strptime(str(value), date_format)
+                            template_data[column] = datetime.strptime(
+                                str(value), date_format
+                            )
                             break
                         except ValueError:
                             continue
                         except Exception as e:
-                            print(f"[DEBUG] Failed to parse date in column {column}: {str(e)}")
+                            print(
+                                f"[DEBUG] Failed to parse date in column {column}: {str(e)}"
+                            )
                             break
 
                 # Add processed_folder to template data and process PDF
@@ -237,21 +223,21 @@ class ProcessingQueue:
                     processed_path,
                     config["filter2_column"],
                 )
-                
+
                 # Assign the captured original hyperlink to the task
                 task_to_process.original_excel_hyperlink = original_hyperlink
-                
+
                 # Assign the original PDF location
                 task_to_process.original_pdf_location = task_to_process.pdf_path
-    
+
                 # Continue with processing...
                 self.pdf_manager.process_pdf(
-                    task_to_process.pdf_path,
+                    task_to_process,
                     template_data,
                     config["processed_folder"],
                     config["output_template"],
                 )
-    
+
                 # Update task status to completed
                 with self.lock:
                     task_to_process.status = "completed"
@@ -280,780 +266,17 @@ class ProcessingQueue:
                         )
 
 
-# UI Components
-class PDFViewer(Frame):
-    """A modernized PDF viewer widget with zoom and scroll capabilities."""
-
-    def __init__(self, master: Widget, pdf_manager: Any):
-        super().__init__(master)
-        self.pdf_manager = pdf_manager
-        self.current_image: Optional[PILPhotoImage] = None
-        self.current_pdf: Optional[str] = None
-        self.zoom_level = 1.0
-
-        # Configure grid weights
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-
-        self.setup_ui()
-
-    def setup_ui(self) -> None:
-        """Setup the PDF viewer interface."""
-        # Create a container frame with fixed padding for scrollbars
-        self.container_frame = Frame(self)
-        self.container_frame.grid(row=0, column=0, sticky="nsew")
-        self.container_frame.grid_columnconfigure(0, weight=1)
-        self.container_frame.grid_rowconfigure(0, weight=1)
-
-        # Create canvas with modern styling
-        self.canvas = Canvas(
-            self.container_frame,
-            bg="#f8f9fa",  # Light gray background
-            highlightthickness=0,  # Remove border
-            width=20,  # Minimum width to prevent collapse
-            height=20,  # Minimum height to prevent collapse
-        )
-        self.canvas.grid(row=0, column=0, sticky="nsew")
-
-        # Modern scrollbars - always create them to reserve space
-        self.h_scrollbar = Scrollbar(
-            self.container_frame, orient="horizontal", command=self.canvas.xview
-        )
-        self.h_scrollbar.grid(row=1, column=0, sticky="ew")
-
-        self.v_scrollbar = Scrollbar(
-            self.container_frame, orient="vertical", command=self.canvas.yview
-        )
-        self.v_scrollbar.grid(row=0, column=1, sticky="ns")
-
-        # Configure canvas scrolling
-        self.canvas.configure(
-            xscrollcommand=self._on_x_scroll, yscrollcommand=self._on_y_scroll
-        )
-
-        # Initially hide scrollbars but keep their space reserved
-        self.h_scrollbar.grid_remove()
-        self.v_scrollbar.grid_remove()
-
-        # Create a frame for the loading message that won't affect layout
-        self.loading_frame = Frame(self.container_frame)
-        self.loading_frame.place(relx=0.5, rely=0.5, anchor="center")
-
-        self._bind_events()
-
-    def _on_x_scroll(self, *args) -> None:
-        """Handle horizontal scrolling and scrollbar visibility."""
-        self.h_scrollbar.set(*args)
-        self._update_scrollbar_visibility()
-
-    def _on_y_scroll(self, *args) -> None:
-        """Handle vertical scrolling and scrollbar visibility."""
-        self.v_scrollbar.set(*args)
-        self._update_scrollbar_visibility()
-
-    def _update_scrollbar_visibility(self) -> None:
-        """Update scrollbar visibility based on content size."""
-        if not self.current_image:
-            self.h_scrollbar.grid_remove()
-            self.v_scrollbar.grid_remove()
-            return
-
-        # Get the scroll region and canvas size
-        x1, y1, x2, y2 = (
-            self.canvas.bbox("all") if self.canvas.find_all() else (0, 0, 0, 0)
-        )
-        canvas_width = self.canvas.winfo_width()
-        canvas_height = self.canvas.winfo_height()
-
-        # Show/hide horizontal scrollbar
-        if x2 - x1 > canvas_width:
-            self.h_scrollbar.grid()
-        else:
-            self.h_scrollbar.grid_remove()
-
-        # Show/hide vertical scrollbar
-        if y2 - y1 > canvas_height:
-            self.v_scrollbar.grid()
-        else:
-            self.v_scrollbar.grid_remove()
-
-    def _bind_events(self) -> None:
-        """Bind mouse and keyboard events."""
-
-        def _on_mousewheel(event: Event) -> None:
-            if event.state & 4:  # Ctrl key
-                if event.delta > 0:
-                    self.zoom_in()
-                else:
-                    self.zoom_out()
-            else:
-                self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        def _bind_mousewheel(event: Event) -> None:
-            self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-        def _unbind_mousewheel(event: Event) -> None:
-            self.canvas.unbind_all("<MouseWheel>")
-
-        # Bind mousewheel only when mouse is over the PDF viewer area
-        self.canvas.bind("<Enter>", _bind_mousewheel)
-        self.canvas.bind("<Leave>", _unbind_mousewheel)
-        self.v_scrollbar.bind("<Enter>", _bind_mousewheel)
-        self.v_scrollbar.bind("<Leave>", _unbind_mousewheel)
-
-        # Pan functionality
-        self.canvas.bind("<Button-1>", self._start_drag)
-        self.canvas.bind("<B1-Motion>", self._do_drag)
-        self.canvas.bind("<ButtonRelease-1>", self._stop_drag)
-
-        # Window resize handling
-        self.canvas.bind("<Configure>", self._on_resize)
-        self.canvas.bind("<Key>", self._on_key)
-
-    def _start_drag(self, event: Event) -> None:
-        """Start panning the view."""
-        self.canvas.scan_mark(event.x, event.y)
-        self.canvas.configure(cursor="fleur")
-
-    def _do_drag(self, event: Event) -> None:
-        """Continue panning the view."""
-        self.canvas.scan_dragto(event.x, event.y, gain=1)
-
-    def _stop_drag(self, event: Event) -> None:
-        """Stop panning the view."""
-        self.canvas.configure(cursor="")
-
-    def _on_key(self, event: Event) -> None:
-        """Handle keyboard navigation."""
-        key = event.keysym
-        shift_pressed = event.state & 0x1
-
-        if key == "Up":
-            self.canvas.yview_scroll(-1 * (5 if shift_pressed else 1), "units")
-        elif key == "Down":
-            self.canvas.yview_scroll(1 * (5 if shift_pressed else 1), "units")
-        elif key == "Left":
-            self.canvas.xview_scroll(-1 * (5 if shift_pressed else 1), "units")
-        elif key == "Right":
-            self.canvas.xview_scroll(1 * (5 if shift_pressed else 1), "units")
-        elif key == "Prior":  # Page Up
-            self.canvas.yview_scroll(-1, "pages")
-        elif key == "Next":  # Page Down
-            self.canvas.yview_scroll(1, "pages")
-        elif key == "Home":
-            self.canvas.yview_moveto(0)
-        elif key == "End":
-            self.canvas.yview_moveto(1)
-
-    def _on_resize(self, event: Event) -> None:
-        """Handle window resize events."""
-        if event.widget == self.canvas:
-            self._center_image()
-            self._update_scrollbar_visibility()
-
-    def _center_image(self) -> None:
-        """Center the PDF image in the canvas."""
-        if not self.current_image:
-            return
-
-        # Get dimensions
-        canvas_width = self.canvas.winfo_width()
-        canvas_height = self.canvas.winfo_height()
-        image_width = self.current_image.width()
-        image_height = self.current_image.height()
-
-        # Calculate centering offsets
-        x = max(0, (canvas_width - image_width) // 2)
-        y = max(0, (canvas_height - image_height) // 2)
-
-        # Set scroll region to image bounds plus padding
-        scroll_width = max(canvas_width, image_width + x * 2)
-        scroll_height = max(canvas_height, image_height + y * 2)
-
-        self.canvas.configure(scrollregion=(0, 0, scroll_width, scroll_height))
-
-        # Clear and redraw image
-        self.canvas.delete("all")
-        image_x = (scroll_width - image_width) // 2
-        image_y = (scroll_height - image_height) // 2
-        self.canvas.create_image(
-            image_x, image_y, anchor="nw", image=self.current_image
-        )
-
-        # Update scrollbar visibility
-        self._update_scrollbar_visibility()
-
-    def display_pdf(
-        self, pdf_path: str, zoom: float = 1.0, show_loading: bool = True
-    ) -> None:
-        """Display a PDF file with the specified zoom level."""
-        try:
-            self.current_pdf = pdf_path
-            self.zoom_level = zoom
-
-            # Show loading message using place geometry manager
-            loading_label = None
-            if show_loading:
-                loading_label = Label(
-                    self.loading_frame, text="Loading PDF...", font=("Segoe UI", 10)
-                )
-                loading_label.pack(pady=20)
-                self.loading_frame.lift()  # Bring loading message to front
-                self.update()
-
-            # Render PDF
-            image = self.pdf_manager.render_pdf_page(pdf_path, zoom=zoom)
-
-            if loading_label:
-                loading_label.destroy()
-                self.loading_frame.place_forget()  # Hide the loading frame
-
-            self.current_image = PILPhotoImage(image)
-            self._center_image()
-            self.canvas.focus_set()
-
-        except Exception as e:
-            if loading_label:
-                loading_label.destroy()
-                self.loading_frame.place_forget()  # Hide the loading frame in case of error
-            ErrorDialog(self, "Error", f"Error displaying PDF: {str(e)}")
-
-    def zoom_in(self, step: float = 0.2) -> None:
-        """Zoom in the PDF view."""
-        if self.current_pdf:
-            self.zoom_level = min(3.0, self.zoom_level + step)
-            self.display_pdf(self.current_pdf, self.zoom_level, show_loading=False)
-
-    def zoom_out(self, step: float = 0.2) -> None:
-        """Zoom out the PDF view."""
-        if self.current_pdf:
-            self.zoom_level = max(0.2, self.zoom_level - step)
-            self.display_pdf(self.current_pdf, self.zoom_level, show_loading=False)
-
-
-class QueueDisplay(Frame):
-    def __init__(self, master: Widget):
-        super().__init__(master)
-        self.setup_ui()
-
-    def setup_ui(self) -> None:
-        # Configure grid weights for responsive layout
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=0)  # For buttons
-
-        print("[DEBUG] Setting up QueueDisplay UI")
-        
-        # Create a frame for the table and scrollbar with a light background
-        table_frame = Frame(self, style="Card.TFrame")
-        table_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        table_frame.grid_columnconfigure(0, weight=1)
-        table_frame.grid_rowconfigure(0, weight=1)
-
-        # Setup table with more informative columns
-        columns = ("task_id", "filename", "values", "status", "time")
-        print("[DEBUG] Creating Treeview with columns:", columns)
-        self.table = Treeview(
-            table_frame,
-            columns=columns,
-            show="headings",
-            selectmode="browse",  # Single selection mode
-            style="Queue.Treeview"
-        )
-
-        # Create context menu
-        print("[DEBUG] Creating context menu")
-        self.context_menu = Menu(self, tearoff=0)
-        self.context_menu.add_command(
-            label="Revert Task",
-            command=self._on_revert_task
-        )
-
-        # Bind right-click to show context menu
-        print("[DEBUG] Binding context menu events")
-        self.table.bind("<Button-3>", self._show_context_menu)  # Windows/Linux right-click
-        self.table.bind("<Button-2>", self._show_context_menu)  # macOS right-click
-
-        # Configure modern style for the treeview
-        style = Style()
-        style.configure(
-            "Queue.Treeview",
-            background="#ffffff",
-            foreground="#333333",
-            rowheight=30,
-            fieldbackground="#ffffff",
-            borderwidth=0,
-            font=("Segoe UI", 9)
-        )
-        style.configure(
-            "Queue.Treeview.Heading",
-            background="#f0f0f0",
-            foreground="#333333",
-            relief="flat",
-            font=("Segoe UI", 9, "bold")
-        )
-        style.map(
-            "Queue.Treeview",
-            background=[("selected", "#e7f3ff")],
-            foreground=[("selected", "#000000")]
-        )
-
-        # Configure headings with sort functionality and modern look
-        self.table.heading("task_id", text="Task ID", anchor="w", command=lambda: self._sort_column("task_id"))
-        self.table.heading("filename", text="File", anchor="w", command=lambda: self._sort_column("filename"))
-        self.table.heading("values", text="Selected Values", anchor="w", command=lambda: self._sort_column("values"))
-        self.table.heading("status", text="Status", anchor="w", command=lambda: self._sort_column("status"))
-        self.table.heading("time", text="Time", anchor="w", command=lambda: self._sort_column("time"))
-
-        # Configure column properties
-        self.table.column("task_id", width=0, minwidth=0, stretch=False)  # Hidden column for internal use
-        self.table.column("filename", width=250, minwidth=150, stretch=True)
-        self.table.column("values", width=250, minwidth=150, stretch=True)
-        self.table.column("status", width=100, minwidth=80, stretch=False)
-        self.table.column("time", width=80, minwidth=80, stretch=False)
-
-        # Add modern-looking scrollbars
-        style.configure("Queue.Vertical.TScrollbar", background="#ffffff", troughcolor="#f0f0f0", width=10)
-        style.configure("Queue.Horizontal.TScrollbar", background="#ffffff", troughcolor="#f0f0f0", width=10)
-
-        v_scrollbar = Scrollbar(
-            table_frame,
-            orient="vertical",
-            command=self.table.yview,
-            style="Queue.Vertical.TScrollbar"
-        )
-        self.table.configure(yscrollcommand=v_scrollbar.set)
-
-        h_scrollbar = Scrollbar(
-            table_frame,
-            orient="horizontal",
-            command=self.table.xview,
-            style="Queue.Horizontal.TScrollbar"
-        )
-        self.table.configure(xscrollcommand=h_scrollbar.set)
-
-        # Grid table and scrollbars
-        self.table.grid(row=0, column=0, sticky="nsew")
-        v_scrollbar.grid(row=0, column=1, sticky="ns")
-        h_scrollbar.grid(row=1, column=0, sticky="ew")
-
-        # Configure status colors
-        self.table.tag_configure("pending", foreground="#666666")
-        self.table.tag_configure("processing", foreground="#007bff")
-        self.table.tag_configure("completed", foreground="#28a745")
-        self.table.tag_configure("failed", foreground="#dc3545")
-        self.table.tag_configure("reverted", foreground="#6c757d")  # Add reverted status color
-
-        # Add status icons
-        self.status_icons = {
-            "pending": "⋯",  # Three dots
-            "processing": "↻",  # Rotating arrow
-            "completed": "✓",  # Checkmark
-            "failed": "✗",  # X mark
-            "reverted": "↺"  # Curved arrow for reverted status
-        }
-
-        # Bind events for interactivity
-        self.table.bind("<Double-1>", self._show_task_details)
-        self.table.bind("<Return>", self._show_task_details)
-
-    def _sort_column(self, column: str) -> None:
-        """Sort treeview column."""
-        # Get all items in the treeview
-        items = [(self.table.set(item, column), item) for item in self.table.get_children("")]
-        
-        # Check if we're reversing the sort
-        reverse = False
-        if hasattr(self, "_last_sort") and self._last_sort == (column, False):
-            reverse = True
-        
-        # Store the sort state
-        self._last_sort = (column, reverse)
-        
-        # Sort the items
-        items.sort(reverse=reverse)
-        
-        # Rearrange items in sorted positions
-        for index, (_, item) in enumerate(items):
-            self.table.move(item, "", index)
-
-        # Update the heading to show sort direction
-        for col in self.table["columns"]:
-            if col == column:
-                self.table.heading(col, text=f"{self.table.heading(col)['text']} {'↓' if reverse else '↑'}")
-            else:
-                # Remove sort indicator from other columns
-                self.table.heading(col, text=self.table.heading(col)['text'].split(' ')[0])
-
-    def _format_values_display(self, values_str: str) -> str:
-        """Format the values string for better readability."""
-        if not values_str or " | " not in values_str:
-            return values_str
-        
-        parts = values_str.split(" | ")
-        return " → ".join(parts)  # Using arrow for better visual flow
-
-    def update_display(self, tasks: Dict[str, PDFTask]) -> None:
-        """Update the queue display with current tasks."""
-        print("[DEBUG] Updating display with tasks:", len(tasks))
-        
-        # Store current selection
-        selection = self.table.selection()
-        print("[DEBUG] Current selection before update:", selection)
-        
-        # Get currently selected task IDs
-        selected_task_ids = []
-        for item in selection:
-            values = self.table.item(item)["values"]
-            if values and len(values) > 0:
-                selected_task_ids.append(str(values[0]))  # First column is now task_id
-        print("[DEBUG] Selected task IDs:", selected_task_ids)
-
-        # Get current items in table
-        current_items = {}
-        for item in self.table.get_children():
-            values = self.table.item(item)["values"]
-            if values and len(values) > 0:
-                current_items[str(values[0])] = item  # First column is now task_id
-        print("[DEBUG] Current items in table:", len(current_items))
-
-        # Track which items need to be removed
-        items_to_remove = set(current_items.keys())
-
-        for task in tasks.values():
-            # Format the values string for better readability
-            values_str = self._format_values_display(f"{task.value1} | {task.value2} | {task.value3}")
-
-            # Get current time for processing tasks
-            time_str = datetime.now().strftime("%H:%M:%S") if task.status == "processing" else ""
-
-            # Add status icon to status text
-            status_display = f"{self.status_icons[task.status]} {task.status.capitalize()}"
-
-            # Create display values with task_id as first column
-            display_values = (
-                task.task_id,  # Use task_id as identifier
-                task.pdf_path,
-                values_str,
-                status_display,
-                time_str,
-            )
-
-            if task.task_id in current_items:
-                # Update existing item only if values have changed
-                item_id = current_items[task.task_id]
-                current_values = [str(v) for v in self.table.item(item_id)["values"]]
-                new_values = [str(v) for v in display_values]
-                
-                if current_values != new_values:
-                    print(f"[DEBUG] Updating existing item {item_id} for task {task.task_id}")
-                    for idx, value in enumerate(display_values):
-                        self.table.set(item_id, column=idx, value=value)
-                    self.table.item(item_id, tags=(task.status,))
-                
-                # Don't remove this item
-                items_to_remove.discard(task.task_id)
-            else:
-                # Insert new item
-                print(f"[DEBUG] Inserting new item for task {task.task_id}")
-                item = self.table.insert(
-                    "",
-                    "end",  # Insert at end to maintain order
-                    values=display_values,
-                    tags=(task.status,),
-                )
-                if task.task_id in selected_task_ids:
-                    print(f"[DEBUG] Restoring selection for {task.task_id}")
-                    self.table.selection_add(item)
-
-        # Remove items that no longer exist
-        for task_id in items_to_remove:
-            item_id = current_items[task_id]
-            print(f"[DEBUG] Removing item {item_id} for task {task_id}")
-            self.table.delete(item_id)
-
-        print("[DEBUG] Final selection after update:", self.table.selection())
-
-    def _show_task_details(self, event: TkEvent) -> None:
-        """Show task details in a dialog when double-clicking a row."""
-        item = self.table.identify("item", event.x, event.y)
-        if not item:
-            return
-
-        # Get the task values
-        values = self.table.item(item)["values"]
-        if not values or len(values) < 4:  # Make sure we have all required values
-            return
-
-        # Create a dialog window
-        dialog = Toplevel(self)
-        dialog.title("Task Details")
-        dialog.transient(self)  # Make dialog modal
-        dialog.grab_set()  # Make dialog modal
-
-        # Calculate position to center the dialog
-        x = self.winfo_rootx() + (self.winfo_width() // 2) - (400 // 2)
-        y = self.winfo_rooty() + (self.winfo_height() // 2) - (300 // 2)
-        dialog.geometry(f"400x300+{x}+{y}")
-
-        # Create a frame with padding
-        frame = TkFrame(dialog, padx=20, pady=20)
-        frame.pack(fill="both", expand=True)
-
-        # Add details with proper formatting and spacing
-        details = [
-            ("File:", path.basename(str(values[0]))),
-            ("Full Path:", str(values[0])),
-            ("Selected Values:", str(values[1])),
-            ("Status:", str(values[2])),
-            ("Time:", str(values[3]) if len(values) > 3 else ""),
-        ]
-
-        # Add each detail with proper styling
-        for i, (label, value) in enumerate(details):
-            Label(frame, text=label, font=("Segoe UI", 10, "bold")).grid(
-                row=i, column=0, sticky="w", pady=(0, 10)
-            )
-            Label(frame, text=value, wraplength=250).grid(
-                row=i, column=1, sticky="w", padx=(10, 0), pady=(0, 10)
-            )
-
-        # Add error message if status is failed
-        if values[2] and "failed" in str(values[2]).lower():
-            Label(frame, text="Error Message:", font=("Segoe UI", 10, "bold")).grid(
-                row=len(details), column=0, sticky="w", pady=(10, 0)
-            )
-
-            # Get error message from the task
-            task_path = values[0]
-            error_msg = "No error message available"
-
-            # Find the ProcessingTab instance by traversing up the widget hierarchy
-            parent = self
-            while parent and not isinstance(parent, ProcessingTab):
-                parent = parent.master
-                print(f"[DEBUG] Traversing up to parent: {type(parent)}")
-            
-            if not isinstance(parent, ProcessingTab):
-                print("[DEBUG] Could not find ProcessingTab parent")
-                messagebox.showerror("Error", "Internal error: Could not find processing tab.")
-                return
-            
-            processing_tab = parent
-            
-            task = None
-            with processing_tab.pdf_queue.lock:
-                # Look up task by ID
-                for t in processing_tab.pdf_queue.tasks.values():
-                    if t.task_id == task_id:
-                        task = t
-                        break
-                print(f"[DEBUG] Found task: {task}")
-                
-            if not task:
-                print("[DEBUG] Task not found")
-                messagebox.showwarning("Cannot Revert", "Task not found.")
-                return
-            
-            if task.status != "completed":
-                print(f"[DEBUG] Task status is {task.status}, not completed")
-                messagebox.showwarning("Cannot Revert", "Only completed tasks can be reverted.")
-                return
-            
-            confirm = messagebox.askyesno("Confirm Revert", f"Are you sure you want to revert the task for '{path.basename(task.pdf_path)}'?")
-            if not confirm:
-                return
-            
-            try:
-                # Revert Excel hyperlink
-                processing_tab.excel_manager.revert_pdf_link(
-                    excel_file=processing_tab.config_manager.get_config()["excel_file"],
-                    sheet_name=processing_tab.config_manager.get_config()["excel_sheet"],
-                    row_idx=task.row_idx,
-                    filter2_col=processing_tab.config_manager.get_config()["filter2_column"],  # Pass column name directly
-                    original_hyperlink=task.original_excel_hyperlink,
-                    original_value=task.value2  # Pass the original filter2 value
-                )
-                
-                # Convert date string to datetime object
-                try:
-                    date_value = datetime.strptime(task.value3, "%Y-%m-%d")
-                except ValueError:
-                    print(f"[DEBUG] Failed to parse date {task.value3}, trying alternative formats")
-                    # Try alternative date formats
-                    date_formats = ["%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"]
-                    for date_format in date_formats:
-                        try:
-                            date_value = datetime.strptime(task.value3, date_format)
-                            break
-                        except ValueError:
-                            continue
-                    else:
-                        raise ValueError(f"Could not parse date: {task.value3}")
-                
-                # Prepare template data with datetime object
-                template_data = {
-                    "processed_folder": processing_tab.config_manager.get_config()["processed_folder"],
-                    "filter1": task.value1,
-                    "filter2": task.value2,
-                    "filter3": date_value,  # Use the datetime object
-                }
-                
-                print(f"[DEBUG] Template data for output path: {template_data}")
-                
-                # Generate output path
-                current_pdf_path = processing_tab.pdf_manager.generate_output_path(
-                    processing_tab.config_manager.get_config()["output_template"],
-                    template_data
-                )
-                
-                print(f"[DEBUG] Generated current PDF path: {current_pdf_path}")
-                print(f"[DEBUG] Original PDF location: {task.original_pdf_location}")
-                
-                # Revert PDF location
-                processing_tab.pdf_manager.revert_pdf_location(
-                    current_pdf_path=current_pdf_path,
-                    original_pdf_location=task.original_pdf_location
-                )
-                
-                # Update task status
-                with processing_tab.pdf_queue.lock:
-                    task.status = "reverted"
-                    processing_tab.pdf_queue.mark_changed()  # Use mark_changed instead of direct notification
-                
-                messagebox.showinfo("Revert Successful", f"Task for '{path.basename(task.pdf_path)}' has been reverted successfully.")
-            
-            except Exception as e:
-                print(f"[DEBUG] Revert failed: {str(e)}")
-                import traceback
-                print(traceback.format_exc())
-                messagebox.showerror("Revert Failed", f"Failed to revert the task: {str(e)}")
-
-    def _show_context_menu(self, event):
-        """Display the context menu on right-click."""
-        print(f"[DEBUG] Right-click event at y={event.y}")
-        selected_item = self.table.identify_row(event.y)
-        print(f"[DEBUG] Identified row: {selected_item}")
-        
-        if selected_item:
-            print(f"[DEBUG] Setting selection to: {selected_item}")
-            self.table.selection_set(selected_item)
-            print(f"[DEBUG] Current selection: {self.table.selection()}")
-            print(f"[DEBUG] Posting menu at x={event.x_root}, y={event.y_root}")
-            self.context_menu.post(event.x_root, event.y_root)
-        else:
-            print("[DEBUG] No row identified at click position")
-
-    def _on_revert_task(self):
-        """Handle the Revert Task action from the context menu."""
-        selected_items = self.table.selection()
-        if not selected_items:
-            print("[DEBUG] No items selected")
-            return
-            
-        selected_item = selected_items[0]
-        item_values = self.table.item(selected_item)
-        
-        # Get the task ID from the first column
-        task_id = item_values.get("values", [None])[0]
-        if not task_id:
-            print("[DEBUG] No task ID found")
-            return
-            
-        # Find the ProcessingTab instance
-        parent = self
-        while parent and not isinstance(parent, ProcessingTab):
-            parent = parent.master
-        
-        if not isinstance(parent, ProcessingTab):
-            messagebox.showerror("Error", "Internal error: Could not find processing tab.")
-            return
-            
-        processing_tab = parent
-        
-        # Get task using the new thread-safe method
-        task = processing_tab.pdf_queue.get_task_by_id(task_id)
-        if not task:
-            messagebox.showwarning("Cannot Revert", "Task not found.")
-            return
-            
-        if task.status != "completed":
-            messagebox.showwarning("Cannot Revert", "Only completed tasks can be reverted.")
-            return
-        
-        confirm = messagebox.askyesno("Confirm Revert", f"Are you sure you want to revert the task for '{path.basename(task.pdf_path)}'?")
-        if not confirm:
-            return
-        
-        try:
-            # Revert Excel hyperlink
-            processing_tab.excel_manager.revert_pdf_link(
-                excel_file=processing_tab.config_manager.get_config()["excel_file"],
-                sheet_name=processing_tab.config_manager.get_config()["excel_sheet"],
-                row_idx=task.row_idx,
-                filter2_col=processing_tab.config_manager.get_config()["filter2_column"],
-                original_hyperlink=task.original_excel_hyperlink,
-                original_value=task.value2
-            )
-            
-            # Convert date string to datetime object
-            try:
-                date_value = datetime.strptime(task.value3, "%Y-%m-%d")
-            except ValueError:
-                # Try alternative date formats
-                date_formats = ["%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"]
-                for date_format in date_formats:
-                    try:
-                        date_value = datetime.strptime(task.value3, date_format)
-                        break
-                    except ValueError:
-                        continue
-                else:
-                    raise ValueError(f"Could not parse date: {task.value3}")
-            
-            # Prepare template data with datetime object
-            template_data = {
-                "processed_folder": processing_tab.config_manager.get_config()["processed_folder"],
-                "filter1": task.value1,
-                "filter2": task.value2,
-                "filter3": date_value,
-            }
-            
-            # Generate output path
-            current_pdf_path = processing_tab.pdf_manager.generate_output_path(
-                processing_tab.config_manager.get_config()["output_template"],
-                template_data
-            )
-            
-            # Revert PDF location
-            processing_tab.pdf_manager.revert_pdf_location(
-                current_pdf_path=current_pdf_path,
-                original_pdf_location=task.original_pdf_location
-            )
-            
-            # Update task status using the new thread-safe method
-            processing_tab.pdf_queue.update_task_status(task_id, "reverted")
-            
-            messagebox.showinfo("Revert Successful", f"Task for '{path.basename(task.pdf_path)}' has been reverted successfully.")
-        
-        except Exception as e:
-            print(f"[DEBUG] Revert failed: {str(e)}")
-            import traceback
-            print(traceback.format_exc())
-            messagebox.showerror("Revert Failed", f"Failed to revert the task: {str(e)}")
-
-
 class ProcessingTab(Frame):
     """A modernized tab for processing PDF files with Excel data integration."""
 
     def __init__(
         self,
-        master: Widget,
+        master: TkWidget,
         config_manager: ConfigManager,
         excel_manager: ExcelManager,
         pdf_manager: PDFManager,
         error_handler: Callable[[Exception, str], None],
-        status_handler: Callable[[str], None]
+        status_handler: Callable[[str], None],
     ) -> None:
         super().__init__(master)
         self.master = master
@@ -1275,7 +498,7 @@ class ProcessingTab(Frame):
             # Update layout
             self.update_idletasks()
 
-    def _create_left_panel(self, parent: Widget) -> Frame:
+    def _create_left_panel(self, parent: TkWidget) -> Frame:
         """Create the left panel containing file information and queue."""
         panel = Frame(parent)
         panel.grid_columnconfigure(0, weight=1)
@@ -1313,7 +536,7 @@ class ProcessingTab(Frame):
 
         return panel
 
-    def _create_center_panel(self, parent: Widget) -> Frame:
+    def _create_center_panel(self, parent: TkWidget) -> Frame:
         """Create the center panel containing the PDF viewer."""
         panel = Frame(parent)
         panel.grid_columnconfigure(0, weight=1)
@@ -1360,7 +583,7 @@ class ProcessingTab(Frame):
 
         return panel
 
-    def _create_right_panel(self, parent: Widget) -> Frame:
+    def _create_right_panel(self, parent: TkWidget) -> Frame:
         """Create the right panel containing filters and actions."""
         panel = Frame(parent)
 
@@ -1385,14 +608,14 @@ class ProcessingTab(Frame):
         self.skip_button = Button(
             actions_frame,
             text="Next File (Ctrl+N)",
-            command=self.load_next_pdf,
+            command=lambda: self.load_next_pdf(move_to_skipped=True),
             style="Primary.TButton",
         )
         self.skip_button.pack(fill="x")
 
         return panel
 
-    def _setup_filters(self, parent: Widget) -> None:
+    def _setup_filters(self, parent: TkWidget) -> None:
         """Setup the filter controls with improved styling."""
         self.filter1_label = Label(parent, text="", style="Header.TLabel")
         self.filter1_label.pack(pady=(0, 5))
@@ -1447,8 +670,8 @@ class ProcessingTab(Frame):
         # Bind shortcuts to the main frame
         shortcuts = {
             "<Return>": self._handle_return_key,
-            "<Control-n>": lambda e: self.load_next_pdf(),
-            "<Control-N>": lambda e: self.load_next_pdf(),
+            "<Control-n>": lambda e: self.load_next_pdf(move_to_skipped=True),
+            "<Control-N>": lambda e: self.load_next_pdf(move_to_skipped=True),
             "<Control-plus>": lambda e: self.pdf_viewer.zoom_in(),
             "<Control-minus>": lambda e: self.pdf_viewer.zoom_out(),
             "<Control-r>": lambda e: self.rotate_clockwise(),
@@ -1466,7 +689,7 @@ class ProcessingTab(Frame):
             if self.filter1_frame.listbox.size() > 0:
                 # Only select first item if nothing is currently selected
                 if not self.filter1_frame.listbox.curselection():
-                    self.filter1_frame.listbox.selection_clear(0, END)
+                    self.filter1_frame.listbox.selection_clear(0, TkEND)
                     self.filter1_frame.listbox.selection_set(0)
                     self.filter1_frame._on_select(None)
         self.filter2_frame.entry.focus_set()
@@ -1479,7 +702,7 @@ class ProcessingTab(Frame):
             if self.filter2_frame.listbox.size() > 0:
                 # Only select first item if nothing is currently selected
                 if not self.filter2_frame.listbox.curselection():
-                    self.filter2_frame.listbox.selection_clear(0, END)
+                    self.filter2_frame.listbox.selection_clear(0, TkEND)
                     self.filter2_frame.listbox.selection_set(0)
                     self.filter2_frame._on_select(None)
         self.filter3_frame.entry.focus_set()
@@ -1492,7 +715,7 @@ class ProcessingTab(Frame):
             if self.filter3_frame.listbox.size() > 0:
                 # Only select first item if nothing is currently selected
                 if not self.filter3_frame.listbox.curselection():
-                    self.filter3_frame.listbox.selection_clear(0, END)
+                    self.filter3_frame.listbox.selection_clear(0, TkEND)
                     self.filter3_frame.listbox.selection_set(0)
                     self.filter3_frame._on_select(None)
         self.confirm_button.focus_set()
@@ -1531,9 +754,7 @@ class ProcessingTab(Frame):
 
             # Cache hyperlinks for filter2 column only
             self.excel_manager.cache_hyperlinks_for_column(
-                config["excel_file"],
-                config["excel_sheet"],
-                config["filter2_column"]
+                config["excel_file"], config["excel_sheet"], config["filter2_column"]
             )
 
             self.filter1_label["text"] = config["filter1_column"]
@@ -1567,12 +788,13 @@ class ProcessingTab(Frame):
             self.filter1_frame.set_values(self.all_values1)
 
         except Exception as e:
-            import traceback
             print(f"[DEBUG] Error in reload_excel_data_and_update_ui:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}")
 
-    def _format_filter2_value(self, value: str, row_idx: int, has_hyperlink: bool = False) -> str:
+    def _format_filter2_value(
+        self, value: str, row_idx: int, has_hyperlink: bool = False
+    ) -> str:
         """Format filter2 value with row number and checkmark if hyperlinked."""
         prefix = "✓ " if has_hyperlink else ""
         return f"{prefix}{value} ⟨Excel Row: {row_idx + 2}⟩"  # +2 because Excel is 1-based and has header
@@ -1609,7 +831,9 @@ class ProcessingTab(Frame):
                 for idx, row in filtered_df.iterrows():
                     value = str(row[config["filter2_column"]]).strip()
                     has_hyperlink = self.excel_manager.has_hyperlink(idx)
-                    formatted_value = self._format_filter2_value(value, idx, has_hyperlink)
+                    formatted_value = self._format_filter2_value(
+                        value, idx, has_hyperlink
+                    )
                     filter2_values.append(formatted_value)
 
                 self.filter2_frame.clear()
@@ -1692,22 +916,85 @@ class ProcessingTab(Frame):
             self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False
         )
 
-    def load_next_pdf(self) -> None:
-        """Load the next PDF file from the source folder."""
+    def _move_to_skipped_folder(self, pdf_path: str) -> None:
+        """Move a skipped PDF file to the skipped documents folder."""
+        try:
+            skipped_folder = r"\\192.168.0.77\tarec\Archive\SCANNER\SKIPPED DOCUMENT"
+            if not path.exists(skipped_folder):
+                makedirs(skipped_folder, exist_ok=True)
+            
+            # Get the filename and create the destination path
+            filename = path.basename(pdf_path)
+            dest_path = path.join(skipped_folder, filename)
+            
+            # If file already exists in destination, get a versioned name
+            if path.exists(dest_path):
+                base_name = path.splitext(filename)[0]
+                ext = path.splitext(filename)[1]
+                counter = 1
+                while path.exists(dest_path):
+                    new_filename = f"{base_name}_v{counter}{ext}"
+                    dest_path = path.join(skipped_folder, new_filename)
+                    counter += 1
+            
+            # Clear all PDF handles
+            # 1. Clear the PDF viewer canvas
+            if hasattr(self.pdf_viewer, "canvas"):
+                self.pdf_viewer.canvas.delete("all")
+            
+            # 2. Clear the PDF viewer's cached image
+            if hasattr(self.pdf_viewer, "current_image"):
+                self.pdf_viewer.current_image = None
+            
+            # 3. Close any open PDF files in the PDF manager
+            self.pdf_manager.clear_cache()  # Clear the cached PDF document
+            self.pdf_manager.close_current_pdf()  # Close any other open PDFs
+            
+            # Try to move the file with retries
+            max_retries = 3
+            retry_count = 0
+            while retry_count < max_retries:
+                try:
+                    copy2(pdf_path, dest_path)
+                    remove(pdf_path)
+                    self._update_status(f"File skipped and moved to archive")
+                    break
+                except PermissionError:
+                    retry_count += 1
+                    if retry_count == max_retries:
+                        raise
+                    time.sleep(0.5)  # Increased wait time between retries
+            
+        except Exception as e:
+            ErrorDialog(self, "Error", f"Failed to move skipped file: {str(e)}")
+
+    def load_next_pdf(self, move_to_skipped: bool = False) -> None:
+        """Load the next PDF file from the source folder.
+        
+        Args:
+            move_to_skipped: If True, moves current file to skipped folder before loading next.
+        """
         try:
             config = self.config_manager.get_config()
-            
+            current_file = self.current_pdf
+
+            # Clear current PDF reference before moving to prevent double-skipping
+            self.current_pdf = None
+
+            # If there's a current PDF and we should move it to skipped
+            if move_to_skipped and current_file and path.exists(current_file):
+                self._move_to_skipped_folder(current_file)
+
             # Reload Excel data to ensure we have fresh data
             if config["excel_file"] and config["excel_sheet"]:
                 self.reload_excel_data_and_update_ui()
-                
+
             if not config["source_folder"]:
                 self._update_status("Source folder not configured")
                 return
 
             # Clear current display if no PDF is loaded
             if not path.exists(config["source_folder"]):
-                self.current_pdf = None
                 self.file_info["text"] = "Source folder not found"
                 self._update_status("Source folder does not exist")
                 ErrorDialog(
@@ -1736,7 +1023,6 @@ class ProcessingTab(Frame):
 
                 self._update_status("New file loaded")
             else:
-                self.current_pdf = None
                 self.file_info["text"] = "No PDF files found"
                 self._update_status("No files to process")
                 # Clear the PDF viewer
@@ -1762,7 +1048,7 @@ class ProcessingTab(Frame):
         if not path.exists(self.current_pdf):
             self._update_status("File no longer exists")
             ErrorDialog(self, "Error", f"File no longer exists: {self.current_pdf}")
-            self.load_next_pdf()  # Try to load the next file
+            self.load_next_pdf(move_to_skipped=False)  # Don't move to skipped if file doesn't exist
             return
 
         try:
@@ -1802,7 +1088,7 @@ class ProcessingTab(Frame):
 
             # Update status and load next file
             self._update_status("File queued for processing")
-            self.load_next_pdf()
+            self.load_next_pdf(move_to_skipped=False)  # Don't move to skipped since we're processing it
 
             # Clear all filters
             self.filter1_frame.clear()
@@ -1856,7 +1142,9 @@ class ProcessingTab(Frame):
                 total = len(tasks)
                 completed = sum(1 for t in tasks.values() if t.status == "completed")
                 failed = sum(1 for t in tasks.values() if t.status == "failed")
-                pending = sum(1 for t in tasks.values() if t.status in ["pending", "processing"])
+                pending = sum(
+                    1 for t in tasks.values() if t.status in ["pending", "processing"]
+                )
 
             # Update the display
             self.queue_display.update_display(tasks)
@@ -1872,12 +1160,15 @@ class ProcessingTab(Frame):
         except Exception as e:
             print(f"[DEBUG] Error updating queue display: {str(e)}")
             import traceback
+
             print(traceback.format_exc())
 
     def _periodic_update(self) -> None:
         """Periodically check for changes and update the queue display only if needed."""
         try:
-            if self.pdf_queue.check_and_clear_changes():  # Only update if there were changes
+            if (
+                self.pdf_queue.check_and_clear_changes()
+            ):  # Only update if there were changes
                 self.update_queue_display()
         except Exception as e:
             print(f"[DEBUG] Error in periodic update: {str(e)}")

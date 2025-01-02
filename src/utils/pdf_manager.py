@@ -4,14 +4,15 @@ from shutil import copy2
 from tempfile import TemporaryDirectory
 from io import BytesIO
 from time import sleep, time
+import re
 from socket import timeout as SocketTimeout, getdefaulttimeout, setdefaulttimeout
 from fitz import open as fitz_open, Matrix
 from PIL.Image import open as pil_open
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from win32file import MoveFileEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_COPY_ALLOWED
 from .excel_manager import is_path_available
 from .template_manager import TemplateManager
-
+from .models import PDFTask
 
 class PDFManager:
     def __init__(self) -> None:
@@ -27,6 +28,34 @@ class PDFManager:
         self._retry_delay: int = 1  # Initial retry delay in seconds
         self.current_rotation: int = 0  # Track current rotation (0, 90, 180, 270)
         self.template_manager = TemplateManager()
+
+    def _get_next_version_number(self, filepath: str) -> Tuple[str, int]:
+        """
+        Get the next available version number for a file.
+        Returns tuple of (versioned_filepath, version_number)
+        """
+        if not path.exists(filepath):
+            return filepath, 0
+
+        directory = path.dirname(filepath)
+        filename = path.basename(filepath)
+        name, ext = path.splitext(filename)
+
+        # Check if filename already has a version number
+        version_match = re.match(r'^(.+)_v(\d+)$', name)
+        if version_match:
+            base_name = version_match.group(1)
+        else:
+            base_name = name
+
+        # Find the highest existing version
+        version = 1
+        while True:
+            versioned_name = f"{base_name}_v{version}{ext}"
+            versioned_path = path.join(directory, versioned_name)
+            if not path.exists(versioned_path):
+                return versioned_path, version
+            version += 1
 
     def generate_output_path(self, template, data):
         """Generate output path using template and data."""
@@ -44,7 +73,6 @@ class PDFManager:
                         value = value.replace(char, "_")
                     sanitized_data[key] = value
 
-
             # Process the template
             filepath = self.template_manager.process_template(template, sanitized_data)
 
@@ -56,19 +84,23 @@ class PDFManager:
             if directory and not path.exists(directory):
                 makedirs(directory, exist_ok=True)
 
+            # Check if file exists and get versioned path if needed
+            if path.exists(filepath):
+                filepath, _ = self._get_next_version_number(filepath)
+
             return filepath
         except Exception as e:
             raise Exception(f"Error generating output path: {str(e)}")
 
     def process_pdf(
         self,
-        current_pdf: str,
+        task: PDFTask,
         template_data: Dict[str, Any],
         processed_folder: str,
         output_template: str,
     ) -> bool:
         """Process a PDF file using template-based naming."""
-        if not path.exists(current_pdf):
+        if not path.exists(task.pdf_path):
             raise Exception("Source PDF file not found")
 
         if not path.exists(processed_folder):
@@ -80,11 +112,15 @@ class PDFManager:
         # Generate new filepath using template
         try:
             new_filepath = self.generate_output_path(output_template, template_data)
+            
+            # Store the processed_pdf_location in the task object if provided
+            if task is not None:
+                task.processed_pdf_location = new_filepath
         except Exception as e:
             raise Exception(f"Error generating output path: {str(e)}")
 
         # Ensure we're not holding the file open
-        self.ensure_pdf_not_cached(current_pdf)
+        self.ensure_pdf_not_cached(task.pdf_path)
 
         retry_count = 0
         delay = self._retry_delay
@@ -100,7 +136,7 @@ class PDFManager:
                     copy_success = False
                     for _ in range(3):
                         try:
-                            copy2(current_pdf, temp_pdf)
+                            copy2(task.pdf_path, temp_pdf)
                             copy_success = True
                             break
                         except PermissionError:
@@ -135,7 +171,7 @@ class PDFManager:
                             MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED,
                         )
                         # Explicitly remove the source file after successful move
-                        remove(current_pdf)
+                        remove(task.pdf_path)
 
                         # Reset rotation after successful processing
                         if self.current_rotation != 0:
@@ -154,7 +190,7 @@ class PDFManager:
                                 remove(new_filepath)
                             except:
                                 pass
-                        copy2(temp_pdf, current_pdf)
+                        copy2(temp_pdf, task.pdf_path)
                         raise move_error
 
             except (PermissionError, OSError) as e:
@@ -313,24 +349,27 @@ class PDFManager:
 
     def revert_pdf_location(
         self,
-        current_pdf_path: str,
-        original_pdf_location: str
+        task: PDFTask
     ) -> None:
         """Revert PDF file back to its original location.
         
         Args:
-            current_pdf_path (str): The current path of the PDF file.
-            original_pdf_location (str): The original location to move the PDF back to.
+            task (PDFTask): The task object containing the current and original PDF locations and processed_pdf_location
             
         Raises:
             Exception: If reverting the PDF location fails.
         """
         try:
-            print(f"[DEBUG] Attempting to revert PDF location from '{current_pdf_path}' to '{original_pdf_location}'")
+            if not task.original_pdf_location:
+                raise Exception("No original PDF location stored in task")
+
+            current_pdf_path = task.processed_pdf_location
+
+            print(f"[DEBUG] Attempting to revert PDF location from '{current_pdf_path}' to '{task.original_pdf_location}'")
             
             # First, ensure the original directory exists
             try:
-                original_dir = path.dirname(original_pdf_location)
+                original_dir = path.dirname(task.original_pdf_location)
                 if not path.exists(original_dir):
                     print(f"[DEBUG] Creating original directory '{original_dir}'")
                     makedirs(original_dir, exist_ok=True)
@@ -340,13 +379,23 @@ class PDFManager:
             
             # Move the file back to its original location
             try:
-                copy2(current_pdf_path, original_pdf_location)
-                print(f"[DEBUG] PDF file moved back to original location '{original_pdf_location}' successfully")
+                if not path.exists(current_pdf_path):
+                    raise Exception(f"Processed PDF file not found at '{current_pdf_path}'")
+
+                # If original file exists, remove it first
+                if path.exists(task.original_pdf_location):
+                    remove(task.original_pdf_location)
+                    print(f"[DEBUG] Removed existing file at original location '{task.original_pdf_location}'")
+
+                copy2(current_pdf_path, task.original_pdf_location)
+                print(f"[DEBUG] PDF file moved back to original location '{task.original_pdf_location}' successfully")
                 
                 # Remove the file from the processed folder
-                if path.exists(current_pdf_path):
-                    remove(current_pdf_path)
-                    print(f"[DEBUG] Removed PDF file from processed location '{current_pdf_path}'")
+                remove(current_pdf_path)
+                print(f"[DEBUG] Removed PDF file from processed location '{current_pdf_path}'")
+                
+                # Clear versioned filename from task
+                task.versioned_filename = None
                 
             except Exception as e:
                 print(f"[DEBUG] Error reverting PDF location: {str(e)}")
@@ -355,3 +404,12 @@ class PDFManager:
         except Exception as e:
             print(f"[DEBUG] Error in revert_pdf_location: {str(e)}")
             raise
+
+    def close_current_pdf(self) -> None:
+        """Close any open PDF files to release system resources."""
+        try:
+            if hasattr(self, '_current_pdf') and self._current_pdf is not None:
+                self._current_pdf.close()
+                self._current_pdf = None
+        except Exception as e:
+            print(f"[DEBUG] Error closing PDF: {str(e)}")
