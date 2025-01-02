@@ -3,6 +3,7 @@ from tkinter import (
     END as TkEND,
     Event as TkEvent,
     Widget as TkWidget,
+    filedialog,
 )
 from tkinter.ttk import (
     Frame,
@@ -533,11 +534,13 @@ class ProcessingTab(Frame):
 
         self.file_info = Label(
             file_info_container,
-            text="No file loaded",
+            text="No file loaded (click to select file)",
             style="Header.TLabel",
             wraplength=200,
+            cursor="hand2"  # Change cursor to hand when hovering
         )
         self.file_info.pack(fill="x", pady=5)
+        self.file_info.bind("<Button-1>", self._on_file_info_click)
 
         # Queue statistics
         stats_frame = Frame(info_frame)
@@ -1218,3 +1221,70 @@ class ProcessingTab(Frame):
                 self.pdf_queue.stop()
         except:
             pass
+
+    def _on_file_info_click(self, event: TkEvent) -> None:
+        """Handle click on file info label to open file picker."""
+        try:
+            config = self.config_manager.get_config()
+            
+            # Reload Excel data to ensure we have fresh data
+            if config["excel_file"] and config["excel_sheet"]:
+                self.reload_excel_data_and_update_ui()
+                
+            source_folder = config["source_folder"]
+            
+            if not source_folder:
+                self._update_status("Source folder not configured")
+                return
+
+            if not path.exists(source_folder):
+                self.file_info["text"] = "Source folder not found"
+                self._update_status("Source folder does not exist")
+                ErrorDialog(self, "Error", f"Source folder not found: {source_folder}")
+                return
+
+            file_path = filedialog.askopenfilename(
+                initialdir=source_folder,
+                title="Select PDF File",
+                filetypes=[("PDF files", "*.pdf")]
+            )
+            
+            if file_path:
+                # Clear current PDF reference and set new one
+                self.current_pdf = None  # Clear first to prevent any state issues
+                self.current_pdf = file_path
+                self.current_pdf_start_time = datetime.now()  # Set start time when PDF is loaded
+                
+                # Update UI elements
+                self.file_info["text"] = path.basename(file_path)
+                self.pdf_viewer.display_pdf(file_path, 1)
+                self.rotation_label.config(text="0°")
+                self.zoom_label.config(text="100%")
+
+                # Clear all filters
+                self.filter1_frame.clear()
+                self.filter2_frame.clear()
+                self.filter3_frame.clear()
+
+                # Reset available values for dependent filters
+                if hasattr(self, 'all_values1'):
+                    self.filter1_frame.set_values(self.all_values1)
+
+                # Focus the first fuzzy search entry
+                self.filter1_frame.entry.focus_set()
+
+                # Enable confirm button if needed
+                self.update_confirm_button()
+
+                self._update_status("New file loaded")
+                
+        except Exception as e:
+            print(f"[DEBUG] Error in _on_file_info_click:")
+            print(traceback.format_exc())
+            ErrorDialog(self, "Error", f"Error loading PDF: {str(e)}")
+            
+            # Clear PDF viewer on error
+            if hasattr(self.pdf_viewer, "canvas"):
+                self.pdf_viewer.canvas.delete("all")
+            # Disable the confirm button since there's no file to process
+            self.confirm_button.state(["disabled"])
