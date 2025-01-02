@@ -74,6 +74,9 @@ class ProcessingQueue:
             for task in self.tasks.values():
                 if task.task_id == task_id:
                     task.status = new_status
+                    # Set end time when task is completed or failed
+                    if new_status in ["completed", "failed"]:
+                        task.end_time = datetime.now()
                     task_to_update = task
                     self.has_changes = True
                     break
@@ -122,9 +125,17 @@ class ProcessingQueue:
 
     def get_task_status(self) -> Dict[str, List[PDFTask]]:
         with self.lock:
-            result = {"pending": [], "processing": [], "failed": [], "completed": []}
+            result = {
+                "pending": [], 
+                "processing": [], 
+                "failed": [], 
+                "completed": [],
+                "reverted": [],
+                "skipped": []  # Add skipped status to tracking
+            }
             for task in self.tasks.values():
-                result[task.status].append(task)
+                if task.status in result:
+                    result[task.status].append(task)
             return result
 
     def check_and_clear_changes(self) -> bool:
@@ -265,6 +276,13 @@ class ProcessingQueue:
                             "[DEBUG] Task marked as failed due to timeout or unexpected state"
                         )
 
+    def add_skipped_task(self, task: PDFTask) -> None:
+        """Add a skipped task to the queue without triggering processing."""
+        with self.lock:
+            task.end_time = datetime.now()  # Set end time immediately for skipped tasks
+            self.tasks[task.pdf_path] = task
+        self.mark_changed()
+
 
 class ProcessingTab(Frame):
     """A modernized tab for processing PDF files with Excel data integration."""
@@ -288,6 +306,7 @@ class ProcessingTab(Frame):
 
         self.pdf_queue = ProcessingQueue(config_manager, excel_manager, pdf_manager)
         self.current_pdf: Optional[str] = None
+        self.current_pdf_start_time: Optional[datetime] = None
 
         # Configure styles
         self._setup_styles()
@@ -983,6 +1002,21 @@ class ProcessingTab(Frame):
 
             # If there's a current PDF and we should move it to skipped
             if move_to_skipped and current_file and path.exists(current_file):
+                # Create a skipped task with the existing start time
+                task = PDFTask(
+                    task_id=PDFTask.generate_id(),
+                    pdf_path=current_file,
+                    value1="",  # No values selected for skipped files
+                    value2="",
+                    value3="",
+                    status="skipped",  # Set initial status as skipped
+                    start_time=self.current_pdf_start_time  # Use the start time from when PDF was loaded
+                )
+                
+                # Add to queue as skipped (won't trigger processing)
+                self.pdf_queue.add_skipped_task(task)
+                
+                # Move the file to skipped folder
                 self._move_to_skipped_folder(current_file)
 
             # Reload Excel data to ensure we have fresh data
@@ -1005,6 +1039,7 @@ class ProcessingTab(Frame):
             next_pdf = self.pdf_manager.get_next_pdf(config["source_folder"])
             if next_pdf:
                 self.current_pdf = next_pdf
+                self.current_pdf_start_time = datetime.now()  # Set start time when PDF is loaded
                 self.file_info["text"] = path.basename(next_pdf)
                 self.pdf_viewer.display_pdf(next_pdf, 1)
                 self.rotation_label.config(text="0°")
@@ -1142,6 +1177,7 @@ class ProcessingTab(Frame):
                 total = len(tasks)
                 completed = sum(1 for t in tasks.values() if t.status == "completed")
                 failed = sum(1 for t in tasks.values() if t.status == "failed")
+                skipped = sum(1 for t in tasks.values() if t.status == "skipped")
                 pending = sum(
                     1 for t in tasks.values() if t.status in ["pending", "processing"]
                 )
@@ -1152,7 +1188,7 @@ class ProcessingTab(Frame):
             # Update statistics display
             if total > 0:
                 self.queue_stats.configure(
-                    text=f"Queue: {total} total ({completed} completed, {failed} failed, {pending} pending)"
+                    text=f"Queue: {total} total ({completed} completed, {failed} failed, {skipped} skipped, {pending} pending)"
                 )
             else:
                 self.queue_stats.configure(text="Queue: 0 total")

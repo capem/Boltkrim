@@ -165,9 +165,8 @@ class QueueDisplay(ttkFrame):
         self.table.tag_configure("processing", foreground="#007bff")
         self.table.tag_configure("completed", foreground="#28a745")
         self.table.tag_configure("failed", foreground="#dc3545")
-        self.table.tag_configure(
-            "reverted", foreground="#6c757d"
-        )  # Add reverted status color
+        self.table.tag_configure("reverted", foreground="#6c757d")
+        self.table.tag_configure("skipped", foreground="#ffc107")  # Yellow color for skipped files
 
         # Add status icons
         self.status_icons = {
@@ -176,6 +175,7 @@ class QueueDisplay(ttkFrame):
             "completed": "✓",  # Checkmark
             "failed": "✗",  # X mark
             "reverted": "↺",  # Curved arrow for reverted status
+            "skipped": "⤳",  # Arrow pointing right for skipped files
         }
 
         # Bind events for interactivity
@@ -249,72 +249,38 @@ class QueueDisplay(ttkFrame):
                 current_items[str(values[0])] = item  # First column is now task_id
         print("[DEBUG] Current items in table:", len(current_items))
 
-        # Track which items need to be removed
-        items_to_remove = set(current_items.keys())
-
+        # Update existing items and add new ones
         for task in tasks.values():
-            # Format the values string for better readability
-            values_str = self._format_values_display(
-                f"{task.value1} | {task.value2} | {task.value3}"
-            )
-
-            # Get current time for processing tasks
-            time_str = (
-                datetime.now().strftime("%H:%M:%S")
-                if task.status == "processing"
-                else ""
-            )
-
-            # Add status icon to status text
-            status_display = (
-                f"{self.status_icons[task.status]} {task.status.capitalize()}"
-            )
-
-            # Create display values with task_id as first column
-            display_values = (
-                task.task_id,  # Use task_id as identifier
-                task.pdf_path,
-                values_str,
-                status_display,
-                time_str,
+            values = (
+                task.task_id,
+                path.basename(task.pdf_path),
+                self._format_values_display(f"{task.value1} | {task.value2} | {task.value3}"),
+                f"{self.status_icons.get(task.status, '')} {task.status}",
+                task.get_elapsed_time()
             )
 
             if task.task_id in current_items:
-                # Update existing item only if values have changed
-                item_id = current_items[task.task_id]
-                current_values = [str(v) for v in self.table.item(item_id)["values"]]
-                new_values = [str(v) for v in display_values]
-
-                if current_values != new_values:
-                    print(
-                        f"[DEBUG] Updating existing item {item_id} for task {task.task_id}"
-                    )
-                    for idx, value in enumerate(display_values):
-                        self.table.set(item_id, column=idx, value=value)
-                    self.table.item(item_id, tags=(task.status,))
-
-                # Don't remove this item
-                items_to_remove.discard(task.task_id)
+                # Update existing item
+                self.table.item(current_items[task.task_id], values=values, tags=(task.status,))
             else:
-                # Insert new item
-                print(f"[DEBUG] Inserting new item for task {task.task_id}")
-                item = self.table.insert(
-                    "",
-                    "end",  # Insert at end to maintain order
-                    values=display_values,
-                    tags=(task.status,),
-                )
-                if task.task_id in selected_task_ids:
-                    print(f"[DEBUG] Restoring selection for {task.task_id}")
-                    self.table.selection_add(item)
+                # Add new item
+                self.table.insert("", TkEND, values=values, tags=(task.status,))
 
         # Remove items that no longer exist
-        for task_id in items_to_remove:
-            item_id = current_items[task_id]
-            print(f"[DEBUG] Removing item {item_id} for task {task_id}")
-            self.table.delete(item_id)
+        task_ids = {task.task_id for task in tasks.values()}
+        for task_id, item in current_items.items():
+            if task_id not in task_ids:
+                self.table.delete(item)
 
-        print("[DEBUG] Final selection after update:", self.table.selection())
+        # Restore selection if items still exist
+        for task_id in selected_task_ids:
+            for item in self.table.get_children():
+                if self.table.item(item)["values"][0] == task_id:
+                    self.table.selection_add(item)
+                    break
+
+        # Force update of display
+        self.update_idletasks()
 
     def _get_processing_tab(self):
         """Get the parent ProcessingTab instance by looping through parent widgets."""
