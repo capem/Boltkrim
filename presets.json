@@ -14,9 +14,20 @@
         "processed_folder": "//192.168.0.77/tarec/Archive/Archive 2023/OV",
         "excel_file": "//192.168.0.77/tarec/Archive/Archive 2023/SUIVI OV CHQ OPCVM BC 2023.xlsx",
         "excel_sheet": "SUIVI OV",
-        "filter1_column": "FRS",
-        "filter2_column": "OV",
-        "filter3_column": "FA",
-        "output_template": "{processed_folder}/{filter1}/OV {filter1} {filter3}.pdf"
+        "output_template": "{processed_folder}/{filter1}/OV {filter1} {filter3}.pdf",
+        "filter1_column": "OV",
+        "filter2_column": "FA",
+        "filter3_column": "DATE DE FACTURE"
+    },
+    "test": {
+        "source_folder": "//192.168.0.77/tarec/Archive/SCANNER/FACTURE RECUES",
+        "processed_folder": "//192.168.0.77/tarec/Archive/Archive 2023/FACTURE RECU",
+        "excel_file": "//192.168.0.77/tarec/Archive/Archive 2023/SUIVI OV CHQ OPCVM BC 2023.xlsx",
+        "excel_sheet": "FACTURE RECU",
+        "output_template": "{processed_folder}/{filter3|date.year}/MOIS {filter3|date.month}/{filter2|str.slice:0:2} {filter1}{filter2|str.slice:2:}.pdf",
+        "filter1_column": "FOURNISSEURS",
+        "filter2_column": "FACTURES",
+        "filter3_column": "DATE FACTURE",
+        "filter4_column": "MNT DH"
     }
 }

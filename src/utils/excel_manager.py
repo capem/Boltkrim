@@ -1,10 +1,10 @@
+from os import path, remove
 from pandas import read_excel, ExcelFile, DataFrame, Series, to_datetime
 from pandas.api.types import is_datetime64_any_dtype
 from openpyxl import load_workbook
 from openpyxl.worksheet.hyperlink import Hyperlink
 from openpyxl.styles import Font
 from shutil import copy2
-from os import path
 from socket import (
     socket,
     AF_INET,
@@ -128,46 +128,45 @@ class ExcelManager:
             sheet_name: Name of the sheet to load
 
         Returns:
-            bool: True if data was loaded successfully
+            bool: True if data was reloaded, False if using cached data
 
         Raises:
             Exception: If network path is unavailable or Excel file cannot be loaded
         """
         try:
-            # Check network path availability first
-            if not is_path_available(excel_file):
-                raise Exception("Network path is not available")
-
-            # Check if we need to reload
+            # Check if we need to reload by comparing file modification time
             try:
                 current_modified = path.getmtime(excel_file)
             except (OSError, PermissionError) as e:
                 print(f"[DEBUG] Failed to get file modification time: {str(e)}")
-                current_modified = None  # Handle network/permission errors for file stat
-                # Force reload since we can't verify modification time
-                self.excel_data = None
-                self._cached_file = None
-                self._cached_sheet = None
-                self._last_modified = None
-                self._hyperlink_cache = {}
+                current_modified = None
 
+            # Use cached data if available and not modified
             if (
                 self.excel_data is not None
                 and self._cached_file == excel_file
                 and self._cached_sheet == sheet_name
                 and self._last_modified == current_modified
+                and current_modified is not None
             ):
-                return True  # Use cached data
+                print("[DEBUG] Using cached Excel data")
+                return False  # Using cached data
+
+            # Only check path availability if we need to reload
+            if not is_path_available(excel_file):
+                raise Exception("Network path is not available")
 
             # Load new data with timeout
             original_timeout = getdefaulttimeout()
             setdefaulttimeout(self._network_timeout)
             try:
+                print("[DEBUG] Loading fresh Excel data")
                 self.excel_data = read_excel(excel_file, sheet_name=sheet_name)
-
                 # Clear existing cache
                 self._hyperlink_cache = {}
-
+                # Clear the last cached key when loading new data
+                if hasattr(self, '_last_cached_key'):
+                    delattr(self, '_last_cached_key')
             finally:
                 setdefaulttimeout(original_timeout)
 
@@ -176,7 +175,7 @@ class ExcelManager:
             self._cached_sheet = sheet_name
             self._last_modified = current_modified
 
-            return True
+            return True  # Data was reloaded
         except Exception as e:
             if isinstance(e, timeout):
                 raise Exception("Network timeout while accessing Excel file")
@@ -192,7 +191,14 @@ class ExcelManager:
             sheet_name: Name of the sheet
             column_name: Name of the column to check for hyperlinks
         """
-        if not self.excel_data is not None:
+        # Skip if Excel data isn't loaded
+        if self.excel_data is None:
+            return
+
+        # Skip if hyperlinks are already cached for this file/sheet/column combination
+        cache_key = f"{excel_file}|{sheet_name}|{column_name}"
+        if hasattr(self, '_last_cached_key') and self._last_cached_key == cache_key:
+            print(f"[DEBUG] Hyperlinks already cached for {column_name}, skipping")
             return
 
         print(f"[DEBUG] Loading hyperlink information for column {column_name}")
@@ -217,6 +223,9 @@ class ExcelManager:
                     row=idx + 2, column=target_col
                 )  # +2 for header and 1-based indexing
                 self._hyperlink_cache[idx] = cell.hyperlink is not None
+
+            # Store the cache key
+            self._last_cached_key = cache_key
 
             wb.close()
             print(f"[DEBUG] Hyperlink information cached for column {column_name}")
@@ -416,117 +425,72 @@ class ExcelManager:
 
     def find_matching_row(
         self,
-        filter1_col: str,
-        filter2_col: str,
-        filter3_col: str,
-        value1: str,
-        value2: str,
-        value3: str,
+        filter_columns: List[str],
+        filter_values: List[str],
     ) -> Tuple[Optional[Series], Optional[int]]:
-        """Find row matching the filter values."""
-        if self.excel_data is None:
-            return None, None
+        """Find a row matching the given filter values.
 
-        # Convert all columns to string and strip whitespace
-        df = self.excel_data.copy()
+        Args:
+            filter_columns: List of column names to filter on
+            filter_values: List of values to match in corresponding columns
 
-        # Handle datetime columns specially
-        for col, val in [
-            (filter1_col, value1),
-            (filter2_col, value2),
-            (filter3_col, value3),
-        ]:
-            if is_datetime64_any_dtype(df[col]):
-                print(f"[DEBUG] Column {col} is datetime type")
-                # Keep datetime type for the column
-                continue
+        Returns:
+            Tuple[Optional[Series], Optional[int]]: Matching row data and index if found
+        """
+        try:
+            if self.excel_data is None:
+                raise Exception("Excel data not loaded")
+
+            if len(filter_columns) != len(filter_values):
+                raise Exception("Number of filter columns and values must match")
+
+            df = self.excel_data
+
+            def create_mask(col: str, value: str) -> Series:
+                """Create a boolean mask for filtering DataFrame."""
+                if col not in df.columns:
+                    raise Exception(f"Column '{col}' not found in Excel file")
+
+                # Convert column to string for comparison
+                df[col] = df[col].astype(str)
+                
+                # Handle date columns
+                if "DATE" in col.upper():
+                    try:
+                        # Try to parse the date value
+                        date_value = pd.to_datetime(value)
+                        # Convert column to datetime if not already
+                        if not is_datetime64_any_dtype(df[col]):
+                            df[col] = pd.to_datetime(df[col], errors='coerce')
+                        return df[col] == date_value
+                    except:
+                        # If date parsing fails, fall back to string comparison
+                        return df[col].str.strip() == str(value).strip()
+                else:
+                    return df[col].str.strip() == str(value).strip()
+
+            # Create mask for each filter
+            masks = [create_mask(col, val) for col, val in zip(filter_columns, filter_values)]
+            
+            # Combine all masks with AND operation
+            final_mask = pd.Series([True] * len(df))
+            for mask in masks:
+                final_mask &= mask
+
+            matching_rows = df[final_mask]
+
+            if len(matching_rows) == 0:
+                return None, None
+            elif len(matching_rows) == 1:
+                row_idx = matching_rows.index[0]
+                return matching_rows.iloc[0], row_idx
             else:
-                # Convert to string and strip for non-datetime columns
-                df[col] = df[col].astype(str).str.strip()
+                # If multiple matches, return the first one
+                row_idx = matching_rows.index[0]
+                return matching_rows.iloc[0], row_idx
 
-        # Convert and strip input values, except for datetime columns
-        value1 = str(value1).strip()
-        value2 = str(value2).strip()
-        value3 = str(value3).strip()
-
-        print(f"[DEBUG] Looking for combination: {value1} | {value2} | {value3}")
-        print(f"[DEBUG] Value3 length: {len(value3)}")
-        print(f"[DEBUG] Value3 repr: {repr(value3)}")
-        print(f"[DEBUG] In columns: {filter1_col} | {filter2_col} | {filter3_col}")
-        print(
-            f"[DEBUG] Column types: {df[filter1_col].dtype} | {df[filter2_col].dtype} | {df[filter3_col].dtype}"
-        )
-
-        # Create the mask for each condition and combine them
-        def create_mask(col: str, value: str) -> Series:
-            if is_datetime64_any_dtype(df[col]):
-                try:
-                    # Try parsing the value as datetime for datetime columns
-                    parsed_date = to_datetime(value)
-                    return df[col].dt.date == parsed_date.date()
-                except Exception as e:
-                    print(f"[DEBUG] Failed to parse date for {col}: {str(e)}")
-                    return Series(False, index=df.index)
-            else:
-                return df[col] == value
-
-        mask1 = create_mask(filter1_col, value1)
-        mask2 = create_mask(filter2_col, value2)
-        mask3 = create_mask(filter3_col, value3)
-
-        # Debug output for matching conditions
-        print(f"[DEBUG] Rows matching first condition: {mask1.sum()}")
-        print(f"[DEBUG] Rows matching second condition: {mask2.sum()}")
-        print(f"[DEBUG] Rows matching third condition: {mask3.sum()}")
-
-        mask = mask1 & mask2 & mask3
-
-        if not mask.any():
-            # Debug output to help identify the issue
-            matching_rows = df[
-                mask1 & mask2
-            ]  # Show rows that match first two conditions
-            if not matching_rows.empty:
-                print(f"[DEBUG] Found rows matching first two conditions:")
-                print(
-                    f"[DEBUG] {matching_rows[[filter1_col, filter2_col, filter3_col]].to_string()}"
-                )
-                print(
-                    f"[DEBUG] Available values in filtered rows: {matching_rows[filter3_col].unique().tolist()}"
-                )
-                # Add detailed comparison for the third column
-                for idx, row in matching_rows.iterrows():
-                    actual_value = row[filter3_col]
-                    print(f"[DEBUG] Comparing FA values:")
-                    print(f"[DEBUG] Expected (len={len(value3)}): {repr(value3)}")
-                    print(
-                        f"[DEBUG] Actual (len={len(actual_value)}): {repr(actual_value)}"
-                    )
-                    print(f"[DEBUG] Values equal: {actual_value == value3}")
-                    if actual_value != value3:
-                        # Compare character by character
-                        min_len = min(len(actual_value), len(value3))
-                        for i in range(min_len):
-                            if actual_value[i] != value3[i]:
-                                print(f"[DEBUG] First difference at position {i}:")
-                                print(
-                                    f"[DEBUG] Expected char: {repr(value3[i])} (ord={ord(value3[i])})"
-                                )
-                                print(
-                                    f"[DEBUG] Actual char: {repr(actual_value[i])} (ord={ord(actual_value[i])})"
-                                )
-                                break
-            else:
-                print("[DEBUG] No rows match even the first two conditions")
-                print(
-                    f"[DEBUG] Values in first column ({filter1_col}): {df[filter1_col].unique().tolist()[:5]}..."
-                )
-                print(
-                    f"[DEBUG] Values in second column ({filter2_col}): {df[filter2_col].unique().tolist()[:5]}..."
-                )
-            return None, None
-
-        return df[mask].iloc[0], mask.idxmax()
+        except Exception as e:
+            raise Exception(f"Error finding matching row: {str(e)}")
 
     def has_hyperlink(self, row_idx: int) -> bool:
         """Check if a row has any hyperlinks.
@@ -544,65 +508,74 @@ class ExcelManager:
         self,
         excel_file: str,
         sheet_name: str,
-        filter1_col: str,
-        filter2_col: str,
-        filter3_col: str,
-        value1: str,
-        value2: str,
-        value3: str
+        filter_columns: List[str],
+        filter_values: List[str],
     ) -> Tuple[Series, int]:
-        """Add a new row to Excel when no matching row is found.
-        
+        """Add a new row to the Excel file with the given filter values.
+
         Args:
             excel_file: Path to the Excel file
-            sheet_name: Name of the sheet
-            filter1_col, filter2_col, filter3_col: Column names for filters
-            value1, value2, value3: Values for the filters
-            
+            sheet_name: Name of the sheet to update
+            filter_columns: List of column names to set
+            filter_values: List of values to set in corresponding columns
+
         Returns:
             Tuple[Series, int]: The new row data and its index
         """
-        if not is_path_available(excel_file):
-            raise FileNotFoundError(f"Excel file not found or not accessible: {excel_file}")
-
-        # Create backup of current data
-        current_data = self.excel_data.copy()
-        
-        # Create new row data
-        new_row = {}
-        for col in self.excel_data.columns:
-            new_row[col] = None
-        
-        # Set filter values
-        new_row[filter1_col] = value1
-        new_row[filter2_col] = value2
-        new_row[filter3_col] = value3
-        
-        # Convert to Series for consistent data types
-        row_data = Series(new_row)
-        
-        # Get the new row index (0-based)
-        new_row_idx = len(current_data)
-        
         try:
-            # Load workbook for editing
-            wb = load_workbook(excel_file)
-            ws = wb[sheet_name]
-            
-            # Add to Excel worksheet (Excel is 1-based and has header)
-            row_values = [new_row[col] for col in self.excel_data.columns]
-            ws.append(row_values)
-            
-            # Save workbook
-            wb.save(excel_file)
-            wb.close()
-            
-            # Update the internal DataFrame
-            self.excel_data = pd.concat([self.excel_data, DataFrame([new_row])], ignore_index=True)
-            
-            print(f"[DEBUG] Added new row to Excel at index {new_row_idx} (Excel row {new_row_idx + 2})")
-            return row_data, new_row_idx
-            
+            if len(filter_columns) != len(filter_values):
+                raise Exception("Number of filter columns and values must match")
+
+            # Create a new row with NaN values
+            new_row = pd.Series(index=self.excel_data.columns)
+
+            # Set the filter values
+            for col, val in zip(filter_columns, filter_values):
+                if col not in self.excel_data.columns:
+                    raise Exception(f"Column '{col}' not found in Excel file")
+                new_row[col] = val
+
+            # Create a temporary backup
+            backup_file = excel_file + ".bak"
+            copy2(excel_file, backup_file)
+
+            try:
+                # Load workbook to preserve formatting
+                wb = load_workbook(excel_file)
+                ws = wb[sheet_name]
+
+                # Add new row to DataFrame
+                self.excel_data = pd.concat(
+                    [self.excel_data, pd.DataFrame([new_row])],
+                    ignore_index=True
+                )
+
+                # Write to Excel
+                with pd.ExcelWriter(
+                    excel_file,
+                    engine="openpyxl",
+                    mode="a",
+                    if_sheet_exists="overlay"
+                ) as writer:
+                    self.excel_data.to_excel(
+                        writer,
+                        sheet_name=sheet_name,
+                        index=False
+                    )
+
+                # Get the new row index
+                row_idx = len(self.excel_data) - 1
+
+                # Remove backup if successful
+                remove(backup_file)
+
+                return new_row, row_idx
+
+            except Exception as e:
+                # Restore from backup
+                copy2(backup_file, excel_file)
+                remove(backup_file)
+                raise Exception(f"Failed to add new row: {str(e)}")
+
         except Exception as e:
-            print(f"[DEBUG] Error adding new row to Excel: {str(e)}")
-            raise
+            raise Exception(f"Error adding new row: {str(e)}")

@@ -16,7 +16,7 @@ from tkinter.ttk import (
     Treeview as ttkTreeview,
 )
 
-from typing import Dict
+from typing import Dict, List
 from datetime import datetime
 from os import path
 from ..utils import PDFTask
@@ -226,61 +226,38 @@ class QueueDisplay(ttkFrame):
         return " → ".join(parts)  # Using arrow for better visual flow
 
     def update_display(self, tasks: Dict[str, PDFTask]) -> None:
-        """Update the queue display with current tasks."""
-        print("[DEBUG] Updating display with tasks:", len(tasks))
-
-        # Store current selection
-        selection = self.table.selection()
-        print("[DEBUG] Current selection before update:", selection)
-
-        # Get currently selected task IDs
-        selected_task_ids = []
-        for item in selection:
-            values = self.table.item(item)["values"]
-            if values and len(values) > 0:
-                selected_task_ids.append(str(values[0]))  # First column is now task_id
-        print("[DEBUG] Selected task IDs:", selected_task_ids)
-
-        # Get current items in table
-        current_items = {}
+        """Update the queue display with the current tasks."""
+        # Clear existing items
         for item in self.table.get_children():
-            values = self.table.item(item)["values"]
-            if values and len(values) > 0:
-                current_items[str(values[0])] = item  # First column is now task_id
-        print("[DEBUG] Current items in table:", len(current_items))
+            self.table.delete(item)
 
-        # Update existing items and add new ones
+        # Add tasks to the table
         for task in tasks.values():
-            values = (
-                task.task_id,
-                path.basename(task.pdf_path),
-                self._format_values_display(f"{task.value1} | {task.value2} | {task.value3}"),
-                f"{self.status_icons.get(task.status, '')} {task.status}",
-                task.get_elapsed_time()
+            # Format values for display
+            values_display = self._format_values_display(" | ".join(task.filter_values))
+            
+            # Format time
+            time_display = ""
+            if task.end_time:
+                duration = task.end_time - task.start_time
+                time_display = f"{duration.seconds}s"
+            elif task.start_time:
+                duration = datetime.now() - task.start_time
+                time_display = f"{duration.seconds}s"
+
+            # Insert task into table
+            self.table.insert(
+                "",
+                "end",
+                values=(
+                    task.task_id,
+                    path.basename(task.pdf_path),
+                    values_display,
+                    f"{self.status_icons.get(task.status, '')} {task.status}",
+                    time_display
+                ),
+                tags=(task.status,)
             )
-
-            if task.task_id in current_items:
-                # Update existing item
-                self.table.item(current_items[task.task_id], values=values, tags=(task.status,))
-            else:
-                # Add new item
-                self.table.insert("", TkEND, values=values, tags=(task.status,))
-
-        # Remove items that no longer exist
-        task_ids = {task.task_id for task in tasks.values()}
-        for task_id, item in current_items.items():
-            if task_id not in task_ids:
-                self.table.delete(item)
-
-        # Restore selection if items still exist
-        for task_id in selected_task_ids:
-            for item in self.table.get_children():
-                if self.table.item(item)["values"][0] == task_id:
-                    self.table.selection_add(item)
-                    break
-
-        # Force update of display
-        self.update_idletasks()
 
     def _get_processing_tab(self):
         """Get the parent ProcessingTab instance by looping through parent widgets."""

@@ -168,17 +168,21 @@ class ProcessingQueue:
 
             try:
                 config = self.config_manager.get_config()
-                excel_manager = type(self.excel_manager)()
+                # Use the existing excel_manager instance instead of creating a new one
+                excel_manager = self.excel_manager
 
                 # Load Excel data and find matching row - ExcelManager handles its own errors
                 excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
-                row_data, row_idx = excel_manager.find_matching_row(
+                
+                # Get filter columns and values
+                filter_columns = [
                     config["filter1_column"],
                     config["filter2_column"],
-                    config["filter3_column"],
-                    task_to_process.value1,
-                    task_to_process.value2,
-                    task_to_process.value3,
+                    config["filter3_column"]
+                ]
+                row_data, row_idx = excel_manager.find_matching_row(
+                    filter_columns=filter_columns,
+                    filter_values=task_to_process.filter_values
                 )
 
                 # If no matching row found, create a new one
@@ -187,12 +191,8 @@ class ProcessingQueue:
                         row_data, row_idx = excel_manager.add_new_row(
                             config["excel_file"],
                             config["excel_sheet"],
-                            config["filter1_column"],
-                            config["filter2_column"],
-                            config["filter3_column"],
-                            task_to_process.value1,
-                            task_to_process.value2,
-                            task_to_process.value3,
+                            filter_columns=filter_columns,
+                            filter_values=task_to_process.filter_values
                         )
                         # Update task with new row index
                         task_to_process.row_idx = row_idx
@@ -205,8 +205,7 @@ class ProcessingQueue:
 
                     except Exception as e:
                         task_to_process.status = "failed"
-                        task_to_process.error_msg = f"Failed to create new row: {
-                            str(e)}"
+                        task_to_process.error_msg = f"Failed to create new row: {str(e)}"
                         self.mark_changed()
                         continue
                 else:
@@ -337,6 +336,7 @@ class ProcessingTab(Frame):
         self.pdf_manager = pdf_manager
         self._handle_error = error_handler
         self._update_status = status_handler
+        self.filter_frames = []  # Store filter frames for dynamic handling
 
         self.pdf_queue = ProcessingQueue(config_manager, excel_manager, pdf_manager)
         self.current_pdf: Optional[str] = None
@@ -367,10 +367,34 @@ class ProcessingTab(Frame):
     def on_config_change(self) -> None:
         """Handle configuration changes."""
         self._update_status("Loading...")
-        self.filter1_frame.clear()
-        self.filter2_frame.clear()
-        self.filter3_frame.clear()
-        self.after(100, self.load_initial_data)
+        
+        # Clear existing filters
+        for frame in self.filter_frames:
+            frame['frame'].destroy()
+        self.filter_frames.clear()
+
+        # Load new filters from config
+        config = self.config_manager.get_config()
+        filter_columns = []
+        i = 1
+        while True:
+            filter_key = f"filter{i}_column"
+            if filter_key not in config:
+                break
+            filter_columns.append(config[filter_key])
+            i += 1
+
+        # Create filter frames
+        for i, column in enumerate(filter_columns, 1):
+            self._add_filter(column, f"filter{i}")
+
+        # Reload Excel data and update UI
+        self.after(100, lambda: self._finish_config_change())
+
+    def _finish_config_change(self) -> None:
+        """Complete the configuration change by reloading data and updating status."""
+        self.reload_excel_data_and_update_ui()
+        self._update_status("Ready")
 
     def _setup_styles(self) -> None:
         """Configure custom styles for the interface."""
@@ -651,267 +675,153 @@ class ProcessingTab(Frame):
         return panel
 
     def _setup_filters(self, parent: TkWidget) -> None:
-        """Setup the filter controls with improved styling."""
-        self.filter1_label = Label(parent, text="", style="Header.TLabel")
-        self.filter1_label.pack(pady=(0, 5))
-        self.filter1_frame = FuzzySearchFrame(
-            parent,
+        """Setup dynamic filter controls based on configuration."""
+        # Create container for filters
+        self.filters_container = Frame(parent)
+        self.filters_container.pack(fill="x", expand=True)
+
+        # Load filters from config
+        config = self.config_manager.get_config()
+        filter_columns = []
+        i = 1
+        while True:
+            filter_key = f"filter{i}_column"
+            if filter_key not in config:
+                break
+            filter_columns.append(config[filter_key])
+            i += 1
+
+        # Create filter frames
+        for i, column in enumerate(filter_columns, 1):
+            self._add_filter(column, f"filter{i}")
+
+        # Initialize Excel data for filters
+        self.reload_excel_data_and_update_ui()
+
+    def _add_filter(self, column_name: str, identifier: str) -> None:
+        """Add a new filter frame."""
+        filter_frame = Frame(self.filters_container)
+        filter_frame.pack(fill="x", pady=(0, 15))
+
+        # Label with column name
+        label = Label(filter_frame, text=column_name, style="Header.TLabel")
+        label.pack(pady=(0, 5))
+
+        # Calculate the current filter index before adding the new frame
+        current_index = len(self.filter_frames)
+
+        # Create fuzzy search frame
+        fuzzy_frame = FuzzySearchFrame(
+            filter_frame,
             width=30,
-            identifier="processing_filter1",
-            on_tab=self._handle_filter1_tab,
+            identifier=f"processing_{identifier}",
+            on_tab=lambda e: self._handle_filter_tab(e, current_index)  # Use the pre-calculated index
         )
-        self.filter1_frame.pack(fill="x", pady=(0, 15))
+        fuzzy_frame.pack(fill="x")
 
-        self.filter2_label = Label(parent, text="", style="Header.TLabel")
-        self.filter2_label.pack(pady=(0, 5))
-        self.filter2_frame = FuzzySearchFrame(
-            parent,
-            width=30,
-            identifier="processing_filter2",
-            on_tab=self._handle_filter2_tab,
-        )
-        self.filter2_frame.pack(fill="x", pady=(0, 15))
+        # Store filter info
+        self.filter_frames.append({
+            'frame': filter_frame,
+            'label': label,
+            'fuzzy_frame': fuzzy_frame,
+            'identifier': identifier,
+            'values': []  # Store available values for this filter
+        })
 
-        self.filter3_label = Label(parent, text="", style="Header.TLabel")
-        self.filter3_label.pack(pady=(0, 5))
-        self.filter3_frame = FuzzySearchFrame(
-            parent,
-            width=30,
-            identifier="processing_filter3",
-            on_tab=self._handle_filter3_tab,
-        )
-        self.filter3_frame.pack(fill="x")
+        # Initialize with available values if this is the first filter
+        if current_index == 0:  # Use current_index instead of len(self.filter_frames)
+            try:
+                config = self.config_manager.get_config()
+                if config["excel_file"] and config["excel_sheet"]:
+                    if self.excel_manager.excel_data is None:
+                        self.excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
+                    
+                    if column_name:
+                        df = self.excel_manager.excel_data
+                        values = sorted(df[column_name].astype(str).unique().tolist())
+                        values = [str(x).strip() for x in values]
+                        fuzzy_frame.set_values(values)
+            except Exception as e:
+                print(f"[DEBUG] Error initializing first filter values: {str(e)}")
 
-        # Bind events for list selection
-        self.filter1_frame.bind("<<ValueSelected>>", lambda e: self.on_filter1_select())
-        self.filter2_frame.bind("<<ValueSelected>>", lambda e: self.on_filter2_select())
-        self.filter3_frame.bind("<<ValueSelected>>", lambda e: self.update_confirm_button())
+        # Bind events
+        fuzzy_frame.bind("<<ValueSelected>>", lambda e: self._on_filter_select(current_index))  # Use current_index
+        fuzzy_frame.entry.bind("<KeyRelease>", lambda e: self.update_confirm_button())
 
-        # Add bindings for manual entry changes
-        self.filter1_frame.entry.bind("<KeyRelease>", lambda e: self.update_confirm_button())
-        self.filter2_frame.entry.bind("<KeyRelease>", lambda e: self.update_confirm_button())
-        self.filter3_frame.entry.bind("<KeyRelease>", lambda e: self.update_confirm_button())
+    def _handle_filter_tab(self, event: Event, filter_index: int) -> str:
+        """Handle tab key in filter to move focus to next filter or confirm button."""
+        current_frame = self.filter_frames[filter_index]['fuzzy_frame']
+        
+        if current_frame.listbox.winfo_ismapped():
+            if current_frame.listbox.size() > 0:
+                if not current_frame.listbox.curselection():
+                    current_frame.listbox.selection_clear(0, TkEND)
+                    current_frame.listbox.selection_set(0)
+                    current_frame._on_select(None)
+                    return "break"  # Stop here if we selected an item
 
-        # Bind keyboard navigation
-        self._bind_keyboard_shortcuts()
-
-    def _bind_keyboard_shortcuts(self) -> None:
-        """Bind keyboard shortcuts for improved navigation and accessibility."""
-        # Tab navigation between filters
-        self.filter1_frame.entry.bind("<Tab>", self._handle_filter1_tab)
-        self.filter2_frame.entry.bind("<Tab>", self._handle_filter2_tab)
-        self.filter3_frame.entry.bind("<Tab>", self._handle_filter3_tab)
-        self.filter1_frame.listbox.bind("<Tab>", self._handle_filter1_tab)
-        self.filter2_frame.listbox.bind("<Tab>", self._handle_filter2_tab)
-        self.filter3_frame.listbox.bind("<Tab>", self._handle_filter3_tab)
-
-        # Bind shortcuts to the main frame
-        shortcuts = {
-            "<Return>": self._handle_return_key,
-            "<Control-n>": lambda e: self.load_next_pdf(move_to_skipped=True),
-            "<Control-N>": lambda e: self.load_next_pdf(move_to_skipped=True),
-            "<Control-plus>": lambda e: self.pdf_viewer.zoom_in(),
-            "<Control-minus>": lambda e: self.pdf_viewer.zoom_out(),
-            "<Control-r>": lambda e: self.rotate_clockwise(),
-            "<Control-R>": lambda e: self.rotate_counterclockwise(),
-        }
-
-        # Bind all shortcuts to the main frame
-        for key, callback in shortcuts.items():
-            self.bind_all(key, callback)
-
-    def _handle_filter1_tab(self, event: Event) -> str:
-        """Handle tab key in filter1 to move focus to filter2."""
-        if self.filter1_frame.listbox.winfo_ismapped():
-            # If listbox is visible, select first item and move to filter2
-            if self.filter1_frame.listbox.size() > 0:
-                # Only select first item if nothing is currently selected
-                if not self.filter1_frame.listbox.curselection():
-                    self.filter1_frame.listbox.selection_clear(0, TkEND)
-                    self.filter1_frame.listbox.selection_set(0)
-                    self.filter1_frame._on_select(None)
-        self.filter2_frame.entry.focus_set()
+        # Move focus to next filter or confirm button
+        if filter_index < len(self.filter_frames) - 1:
+            self.filter_frames[filter_index + 1]['fuzzy_frame'].entry.focus_set()
+        else:
+            self.confirm_button.focus_set()
         return "break"
 
-    def _handle_filter2_tab(self, event: Event) -> str:
-        """Handle tab key in filter2 to move focus to filter3."""
-        if self.filter2_frame.listbox.winfo_ismapped():
-            # If listbox is visible, select first item
-            if self.filter2_frame.listbox.size() > 0:
-                # Only select first item if nothing is currently selected
-                if not self.filter2_frame.listbox.curselection():
-                    self.filter2_frame.listbox.selection_clear(0, TkEND)
-                    self.filter2_frame.listbox.selection_set(0)
-                    self.filter2_frame._on_select(None)
-        self.filter3_frame.entry.focus_set()
-        return "break"
-
-    def _handle_filter3_tab(self, event: Event) -> str:
-        """Handle tab key in filter3 to move focus to confirm button."""
-        if self.filter3_frame.listbox.winfo_ismapped():
-            # If listbox is visible, select first item
-            if self.filter3_frame.listbox.size() > 0:
-                # Only select first item if nothing is currently selected
-                if not self.filter3_frame.listbox.curselection():
-                    self.filter3_frame.listbox.selection_clear(0, TkEND)
-                    self.filter3_frame.listbox.selection_set(0)
-                    self.filter3_frame._on_select(None)
-        self.confirm_button.focus_set()
-        return "break"
-
-    def _handle_return_key(self, event: Event) -> str:
-        """Handle Return key press to process the current file."""
-        # Check if button is not disabled using ttk's state system
-        if "disabled" not in self.confirm_button.state():
-            self.process_current_file()
-        return "break"
-
-    def handle_config_change(self) -> None:
-        """Handle configuration changes by reloading the current PDF if one is loaded."""
-        if self.current_pdf:
-            self.pdf_viewer.display_pdf(self.current_pdf)
-            self.update_queue_display()
-
-    def reload_excel_data_and_update_ui(self) -> None:
+    def _on_filter_select(self, filter_index: int) -> None:
+        """Handle filter selection."""
         try:
             config = self.config_manager.get_config()
-            if not all(
-                [
-                    config["excel_file"],
-                    config["excel_sheet"],
-                    config["filter1_column"],
-                    config["filter2_column"],
-                    config["filter3_column"],
-                ]
-            ):
-                print("Missing configuration values")
+            if self.excel_manager.excel_data is None:
                 return
 
-            self.excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
+            # Get selected values up to current filter
+            selected_values = []
+            for i in range(filter_index + 1):
+                selected_values.append(str(self.filter_frames[i]['fuzzy_frame'].get()).strip())
 
-            # Cache hyperlinks for filter2 column only
-            self.excel_manager.cache_hyperlinks_for_column(
-                config["excel_file"], config["excel_sheet"], config["filter2_column"]
-            )
-
-            self.filter1_label["text"] = config["filter1_column"]
-            self.filter2_label["text"] = config["filter2_column"]
-            self.filter3_label["text"] = config["filter3_column"]
-
+            # Filter DataFrame based on selected values
             df = self.excel_manager.excel_data
+            for i, value in enumerate(selected_values):
+                column = config[f"filter{i+1}_column"]
+                df = df[df[column].astype(str).str.strip() == value]
 
-            # Convert all values to strings to ensure consistent type handling
-            def safe_convert_to_str(val):
-                if pd.isna(val):  # Handle NaN/None values
-                    return ""
-                return str(val).strip()
-
-            # Convert column values to strings
-            self.all_values1 = sorted(df[config["filter1_column"]].astype(str).unique().tolist())
-            self.all_values2 = sorted(df[config["filter2_column"]].astype(str).unique().tolist())
-            self.all_values3 = sorted(df[config["filter3_column"]].astype(str).unique().tolist())
-
-            # Strip whitespace and ensure string type
-            self.all_values1 = [safe_convert_to_str(x) for x in self.all_values1]
-            self.all_values2 = [safe_convert_to_str(x) for x in self.all_values2]
-            self.all_values3 = [safe_convert_to_str(x) for x in self.all_values3]
-
-            self.filter1_frame.set_values(self.all_values1)
-
-        except Exception as e:
-            print(f"[DEBUG] Error in reload_excel_data_and_update_ui:")
-            print(traceback.format_exc())
-            ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}")
-
-    def _format_filter2_value(self, value: str, row_idx: int, has_hyperlink: bool = False) -> str:
-        """Format filter2 value with row number and checkmark if hyperlinked."""
-        prefix = "✓ " if has_hyperlink else ""
-        # +2 because Excel is 1-based and has header
-        return f"{prefix}{value} ⟨Excel Row: {row_idx + 2}⟩"
-
-    def _parse_filter2_value(self, formatted_value: str) -> tuple[str, int]:
-        """Parse filter2 value to get original value and row number."""
-        import re
-
-        # Remove checkmark if present
-        formatted_value = formatted_value.replace("✓ ", "", 1)
-
-        match = re.match(r"(.*?)\s*⟨Excel Row:\s*(\d+)⟩", formatted_value)
-        if match:
-            value = match.group(1).strip()
-            row_num = int(match.group(2))
-            return value, row_num - 2  # Convert back to 0-based index
-        return formatted_value, -1
-
-    def on_filter1_select(self) -> None:
-        try:
-            config = self.config_manager.get_config()
-            if self.excel_manager.excel_data is not None:
-                selected_value = str(self.filter1_frame.get()).strip()
-
-                df = self.excel_manager.excel_data
-                # Convert column to string for comparison
-                df[config["filter1_column"]] = df[config["filter1_column"]].astype(str)
-                filtered_df = df[df[config["filter1_column"]].str.strip() == selected_value]
-
-                # Create list of tuples with values and row indices using cached hyperlink info
-                filter2_values = []
-                for idx, row in filtered_df.iterrows():
-                    value = str(row[config["filter2_column"]]).strip()
-                    has_hyperlink = self.excel_manager.has_hyperlink(idx)
-                    formatted_value = self._format_filter2_value(value, idx, has_hyperlink)
-                    filter2_values.append(formatted_value)
-
-                self.filter2_frame.clear()
-                self.filter2_frame.set_values(sorted(filter2_values))
-
-                # Clear filter3 since no filter2 value is selected yet
-                self.filter3_frame.clear()
-                self.filter3_frame.set_values([])
-
-        except Exception as e:
-            ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
-
-    def on_filter2_select(self) -> None:
-        try:
-            config = self.config_manager.get_config()
-            if self.excel_manager.excel_data is not None:
-                selected_value1 = str(self.filter1_frame.get()).strip()
-                selected_value2_formatted = str(self.filter2_frame.get()).strip()
-
-                # Parse the selected value to get original value and row number
-                selected_value2, row_idx = self._parse_filter2_value(selected_value2_formatted)
-
-                df = self.excel_manager.excel_data
-                # Convert columns to string for comparison
-                df[config["filter1_column"]] = df[config["filter1_column"]].astype(str)
-                df[config["filter2_column"]] = df[config["filter2_column"]].astype(str)
-
-                # Filter based on row index if available
-                if row_idx >= 0:
-                    filtered_df = df.iloc[[row_idx]]
+            # Update next filter's values if there is one
+            if filter_index < len(self.filter_frames) - 1:
+                next_filter = self.filter_frames[filter_index + 1]
+                next_column = config[f"filter{filter_index+2}_column"]
+                
+                # Special handling for filter2 (index 1) to include row information
+                if filter_index == 0:
+                    filter_values = []
+                    for idx, row in df.iterrows():
+                        value = str(row[next_column]).strip()
+                        has_hyperlink = self.excel_manager.has_hyperlink(idx)
+                        formatted_value = self._format_filter2_value(value, idx, has_hyperlink)
+                        filter_values.append(formatted_value)
                 else:
-                    # Fallback to old behavior if row parsing fails
-                    filtered_df = df[
-                        (df[config["filter1_column"]].str.strip() == selected_value1)
-                        & (df[config["filter2_column"]].str.strip() == selected_value2)
-                    ]
+                    filter_values = sorted(df[next_column].astype(str).unique().tolist())
+                    filter_values = [str(x).strip() for x in filter_values]
 
-                filtered_values3 = sorted(filtered_df[config["filter3_column"]].astype(str).tolist())
-                filtered_values3 = [str(x).strip() for x in filtered_values3]
-                self.filter3_frame.clear()
-                self.filter3_frame.set_values(filtered_values3)
+                next_filter['fuzzy_frame'].clear()
+                next_filter['fuzzy_frame'].set_values(filter_values)
+
+                # Clear all subsequent filters
+                for i in range(filter_index + 2, len(self.filter_frames)):
+                    self.filter_frames[i]['fuzzy_frame'].clear()
+                    self.filter_frames[i]['fuzzy_frame'].set_values([])
 
         except Exception as e:
-            import traceback
-
-            print(f"[DEBUG] Error in on_filter2_select:")
+            print(f"[DEBUG] Error in _on_filter_select: {str(e)}")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error updating filters: {str(e)}")
 
     def update_confirm_button(self) -> None:
         """Update the confirm button state based on filter selections."""
-        if self.filter1_frame.get() and self.filter2_frame.get() and self.filter3_frame.get():
+        all_filters_selected = all(
+            frame['fuzzy_frame'].get() for frame in self.filter_frames
+        )
+        
+        if all_filters_selected:
             self.confirm_button.state(["!disabled"])
             self._update_status("Ready to process")
         else:
@@ -1001,11 +911,8 @@ class ProcessingTab(Frame):
                 task = PDFTask(
                     task_id=PDFTask.generate_id(),
                     pdf_path=current_file,
-                    value1="",  # No values selected for skipped files
-                    value2="",
-                    value3="",
+                    filter_values=[""] * len(self.filter_frames),  # Empty values for all filters
                     status="skipped",  # Set initial status as skipped
-                    # Use the start time from when PDF was loaded
                     start_time=self.current_pdf_start_time,
                 )
 
@@ -1030,8 +937,7 @@ class ProcessingTab(Frame):
                 ErrorDialog(
                     self,
                     "Error",
-                    f"Source folder not found: {
-                        config['source_folder']}",
+                    f"Source folder not found: {config['source_folder']}",
                 )
                 return
 
@@ -1050,15 +956,16 @@ class ProcessingTab(Frame):
                 self.zoom_label.config(text="100%")
 
                 # Clear all filters
-                self.filter1_frame.clear()
-                self.filter2_frame.clear()
-                self.filter3_frame.clear()
+                for frame in self.filter_frames:
+                    frame['fuzzy_frame'].clear()
 
-                # Reset available values for dependent filters
-                self.filter1_frame.set_values(self.all_values1)
+                # Reset first filter values if available
+                if len(self.filter_frames) > 0 and hasattr(self, 'all_values1'):
+                    self.filter_frames[0]['fuzzy_frame'].set_values(self.all_values1)
 
-                # Focus the first fuzzy search entry
-                self.filter1_frame.entry.focus_set()
+                # Focus the first filter
+                if self.filter_frames:
+                    self.filter_frames[0]['fuzzy_frame'].entry.focus_set()
 
                 self._update_status("New file loaded")
             else:
@@ -1071,114 +978,189 @@ class ProcessingTab(Frame):
                 self.confirm_button.state(["disabled"])
 
         except Exception as e:
-            import traceback
-
             print(f"[DEBUG] Error in load_next_pdf:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading next PDF: {str(e)}")
 
-    def process_current_file(self) -> None:
-        """Process the current PDF file with selected filters."""
-        print(
-            f"[DEBUG] Starting process_current_file with PDF: {
-              self.current_pdf}"
-        )
-
-        if not self.current_pdf:
-            print("[DEBUG] No PDF file loaded")
-            self._update_status("No file loaded")
-            ErrorDialog(self, "Error", "No PDF file loaded")
-            return
-
-        if not path.exists(self.current_pdf):
-            print(f"[DEBUG] File does not exist at path: {self.current_pdf}")
-            self._update_status("File no longer exists")
-            ErrorDialog(
-                self,
-                "Error",
-                f"File no longer exists: {
-                        self.current_pdf}",
-            )
-            # Don't move to skipped if file doesn't exist
-            self.load_next_pdf(move_to_skipped=False)
-            return
-
+    def _on_file_info_click(self, event: TkEvent) -> None:
+        """Handle click on file info label to open file picker."""
         try:
-            print("[DEBUG] Getting filter values")
-            value1 = self.filter1_frame.get()
-            value2_formatted = self.filter2_frame.get()
-            value3 = self.filter3_frame.get()
-            print(
-                f"[DEBUG] Filter values - filter1: {value1}, filter2_formatted: {
-                  value2_formatted}, filter3: {value3}"
-            )
+            config = self.config_manager.get_config()
 
-            if not value1 or not value2_formatted or not value3:
-                print("[DEBUG] Missing filter values")
-                self._update_status("Select all filters")
+            # Reload Excel data to ensure we have fresh data
+            if config["excel_file"] and config["excel_sheet"]:
+                self.reload_excel_data_and_update_ui()
+
+            source_folder = config["source_folder"]
+
+            if not source_folder:
+                self._update_status("Source folder not configured")
                 return
 
-            # Parse the actual value and row index from the formatted filter2 value
-            value2, row_idx = self._parse_filter2_value(value2_formatted)
-            print(f"[DEBUG] Parsed filter2 - value: {value2}, row_idx: {row_idx}")
+            if not path.exists(source_folder):
+                self.file_info["text"] = "Source folder not found"
+                self._update_status("Source folder does not exist")
+                ErrorDialog(
+                    self,
+                    "Error",
+                    f"Source folder not found: {source_folder}",
+                )
+                return
 
-            # Verify the combination exists in Excel
-            print("[DEBUG] Verifying filter combination in Excel")
-            config = self.config_manager.get_config()
-            excel_row = self.excel_manager.find_matching_row(
-                config["filter1_column"],
-                config["filter2_column"],
-                config["filter3_column"],
-                value1,
-                value2,
-                value3,
+            file_path = filedialog.askopenfilename(
+                initialdir=source_folder,
+                title="Select PDF File",
+                filetypes=[("PDF files", "*.pdf")],
             )
-            print(f"[DEBUG] Excel row found: {excel_row is not None}")
 
-            # Create task using the parsed values
-            print(f"[DEBUG] Creating PDF task for file: {self.current_pdf}")
+            if file_path:
+                # Clear current PDF reference and set new one
+                self.current_pdf = None  # Clear first to prevent any state issues
+                self.current_pdf = file_path
+                self.current_pdf_start_time = datetime.now()  # Set start time when PDF is loaded
+
+                # Update UI elements
+                self.file_info["text"] = path.basename(file_path)
+                self.pdf_viewer.display_pdf(file_path, 1)
+                self.rotation_label.config(text="0°")
+                self.zoom_label.config(text="100%")
+
+                # Clear all filters
+                for frame in self.filter_frames:
+                    frame['fuzzy_frame'].clear()
+
+                # Reset first filter values if available
+                if len(self.filter_frames) > 0 and hasattr(self, 'all_values1'):
+                    self.filter_frames[0]['fuzzy_frame'].set_values(self.all_values1)
+
+                # Focus the first filter
+                if self.filter_frames:
+                    self.filter_frames[0]['fuzzy_frame'].entry.focus_set()
+
+                # Enable confirm button if needed
+                self.update_confirm_button()
+
+                self._update_status("New file loaded")
+
+        except Exception as e:
+            print(f"[DEBUG] Error in _on_file_info_click:")
+            print(traceback.format_exc())
+            ErrorDialog(self, "Error", f"Error loading PDF: {str(e)}")
+
+            # Clear PDF viewer on error
+            if hasattr(self.pdf_viewer, "canvas"):
+                self.pdf_viewer.canvas.delete("all")
+            # Disable the confirm button since there's no file to process
+            self.confirm_button.state(["disabled"])
+
+    def _setup_ui(self) -> None:
+        """Setup the main user interface with a modern, clean layout."""
+        self.configure(padding=20)
+
+        # Configure grid weights for the main frame
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        # Create main container with three columns
+        main_container = Frame(self)
+        main_container.grid(row=0, column=0, sticky="nsew")
+
+        # Configure column weights for the container
+        main_container.grid_columnconfigure(0, weight=0)  # Left panel (collapsible)
+        main_container.grid_columnconfigure(1, weight=0)  # Handle column
+        main_container.grid_columnconfigure(2, weight=8)  # Center panel
+        main_container.grid_columnconfigure(3, weight=1)  # Right panel
+        main_container.grid_rowconfigure(0, weight=1)
+
+        # Left Panel (collapsible)
+        self.left_panel = self._create_left_panel(main_container)
+        self.left_panel.grid(row=0, column=0, sticky="nsew")
+
+        # Style for handle frame and button
+        style = Style()
+        style.configure("Handle.TFrame", background="#e0e0e0")
+        style.configure("Handle.TButton", padding=0, relief="flat", borderwidth=0)
+        style.map("Handle.TButton", background=[("active", "#d0d0d0")])
+
+        # Handle for collapsing/expanding
+        self.handle_frame = Frame(main_container, width=8, style="Handle.TFrame")
+        self.handle_frame.grid(row=0, column=1, sticky="nsew")
+        self.handle_frame.grid_propagate(False)
+
+        # Create a separate button for collapsing/expanding
+        self.handle_button = Button(
+            self.handle_frame,
+            text="⋮",  # Vertical dots as handle icon
+            style="Handle.TButton",
+            command=self._toggle_left_panel,
+        )
+        self.handle_button.place(relx=0.5, rely=0.5, anchor="center", relheight=0.1)
+
+        # Make handle frame draggable for resizing
+        self.handle_frame.bind("<Enter>", lambda e: self.handle_frame.configure(cursor="sb_h_double_arrow"))
+        self.handle_frame.bind("<Leave>", lambda e: self.handle_frame.configure(cursor=""))
+        self.handle_frame.bind("<Button-1>", self._start_resize)
+        self.handle_frame.bind("<B1-Motion>", self._do_resize)
+        self.handle_frame.bind("<ButtonRelease-1>", self._end_resize)
+
+        # Center Panel
+        self.center_panel = self._create_center_panel(main_container)
+        self.center_panel.grid(row=0, column=2, sticky="nsew", padx=(5, 5))
+
+        # Right Panel
+        self.right_panel = self._create_right_panel(main_container)
+        self.right_panel.grid(row=0, column=3, sticky="nsew", padx=(5, 0))
+
+        # Store initial width of left panel
+        self.left_panel_width = 250  # Default width
+        self.left_panel_visible = True
+        self.left_panel.configure(width=self.left_panel_width)
+        self.left_panel.grid_propagate(False)
+
+        # Bind to Configure event to handle window resizing
+        self.bind("<Configure>", self._on_window_resize)
+
+    def process_current_file(self) -> None:
+        """Process the current file."""
+        try:
+            if not self.current_pdf:
+                self._update_status("No file selected")
+                return
+
+            # Get all filter values
+            filter_values = []
+            for frame in self.filter_frames:
+                value = frame['fuzzy_frame'].get()
+                if not value:
+                    self._update_status("Select all filters")
+                    return
+                filter_values.append(value)
+
+            # Parse the actual value and row index from filter2 value if it exists
+            if len(filter_values) > 1:
+                filter_values[1], row_idx = self._parse_filter2_value(filter_values[1])
+            else:
+                row_idx = -1
+
+            # Create PDFTask with a unique task ID
             task = PDFTask(
                 task_id=PDFTask.generate_id(),
                 pdf_path=self.current_pdf,
-                value1=value1,
-                value2=value2,
-                value3=value3,
-                row_idx=row_idx,
+                filter_values=filter_values,
+                row_idx=row_idx
             )
-            print(f"[DEBUG] Created task with ID: {task.task_id}")
 
-            # Add to processing queue (this will mark changes and trigger update)
-            print("[DEBUG] Adding task to processing queue")
+            # Add task to queue
             self.pdf_queue.add_task(task)
-            print("[DEBUG] Task added to queue successfully")
 
-            # Update status and load next file
-            print("[DEBUG] Updating status and loading next file")
-            self._update_status("File queued for processing")
-            # Don't move to skipped since we're processing it
-            self.load_next_pdf(move_to_skipped=False)
-
-            # Clear all filters
-            print("[DEBUG] Clearing filters")
-            self.filter1_frame.clear()
-            self.filter2_frame.clear()
-            self.filter3_frame.clear()
-
-            # Reset available values for dependent filters
-            print("[DEBUG] Resetting filter values")
-            self.filter1_frame.set_values(self.all_values1)
-
-            # Focus the first fuzzy search entry
-            self.filter1_frame.entry.focus_set()
+            # Load next file
+            self.load_next_pdf()
 
         except Exception as e:
             print(f"[DEBUG] Error in process_current_file: {str(e)}")
-            print("[DEBUG] Full traceback:")
-            import traceback
-
             print(traceback.format_exc())
-            self._update_status("Processing error")
-            ErrorDialog(self, "Error", str(e))
+            ErrorDialog(self, "Error", f"Error processing file: {str(e)}")
+            self._update_status("Error processing file")
 
     def _show_error_details(self, event: TkEvent) -> None:
         """Show error details for failed tasks."""
@@ -1257,74 +1239,84 @@ class ProcessingTab(Frame):
         except:
             pass
 
-    def _on_file_info_click(self, event: TkEvent) -> None:
-        """Handle click on file info label to open file picker."""
+    def handle_config_change(self) -> None:
+        """Handle configuration changes by reloading the current PDF if one is loaded."""
+        if self.current_pdf:
+            self.pdf_viewer.display_pdf(self.current_pdf)
+            self.update_queue_display()
+
+    def reload_excel_data_and_update_ui(self) -> None:
+        """Reload Excel data and update UI elements."""
         try:
             config = self.config_manager.get_config()
-
-            # Reload Excel data to ensure we have fresh data
-            if config["excel_file"] and config["excel_sheet"]:
-                self.reload_excel_data_and_update_ui()
-
-            source_folder = config["source_folder"]
-
-            if not source_folder:
-                self._update_status("Source folder not configured")
+            if not all([
+                config["excel_file"],
+                config["excel_sheet"],
+            ]):
+                print("Missing configuration values")
                 return
 
-            if not path.exists(source_folder):
-                self.file_info["text"] = "Source folder not found"
-                self._update_status("Source folder does not exist")
-                ErrorDialog(
-                    self,
-                    "Error",
-                    f"Source folder not found: {
-                            source_folder}",
-                )
-                return
+            # Load Excel data only if needed
+            excel_loaded = self.excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
 
-            file_path = filedialog.askopenfilename(
-                initialdir=source_folder,
-                title="Select PDF File",
-                filetypes=[("PDF files", "*.pdf")],
-            )
+            # Cache hyperlinks for filter2 column only if Excel data was reloaded
+            if excel_loaded and len(self.filter_frames) > 1:
+                filter2_column = config.get("filter2_column")
+                if filter2_column:
+                    self.excel_manager.cache_hyperlinks_for_column(
+                        config["excel_file"], 
+                        config["excel_sheet"], 
+                        filter2_column
+                    )
 
-            if file_path:
-                # Clear current PDF reference and set new one
-                self.current_pdf = None  # Clear first to prevent any state issues
-                self.current_pdf = file_path
-                self.current_pdf_start_time = datetime.now()  # Set start time when PDF is loaded
+            # Update filter labels
+            for i, frame in enumerate(self.filter_frames, 1):
+                column_name = config.get(f"filter{i}_column")
+                if column_name:
+                    frame['label']['text'] = column_name
 
-                # Update UI elements
-                self.file_info["text"] = path.basename(file_path)
-                self.pdf_viewer.display_pdf(file_path, 1)
-                self.rotation_label.config(text="0°")
-                self.zoom_label.config(text="100%")
+            df = self.excel_manager.excel_data
 
-                # Clear all filters
-                self.filter1_frame.clear()
-                self.filter2_frame.clear()
-                self.filter3_frame.clear()
+            # Convert all values to strings to ensure consistent type handling
+            def safe_convert_to_str(val):
+                if pd.isna(val):  # Handle NaN/None values
+                    return ""
+                return str(val).strip()
 
-                # Reset available values for dependent filters
-                if hasattr(self, "all_values1"):
-                    self.filter1_frame.set_values(self.all_values1)
+            # Store all values for the first filter only if Excel was reloaded
+            if excel_loaded and len(self.filter_frames) > 0:
+                first_column = config.get("filter1_column")
+                if first_column:
+                    self.all_values1 = sorted(df[first_column].astype(str).unique().tolist())
+                    self.all_values1 = [safe_convert_to_str(x) for x in self.all_values1]
+                    self.filter_frames[0]['fuzzy_frame'].set_values(self.all_values1)
 
-                # Focus the first fuzzy search entry
-                self.filter1_frame.entry.focus_set()
-
-                # Enable confirm button if needed
-                self.update_confirm_button()
-
-                self._update_status("New file loaded")
+                # Clear other filters
+                for frame in self.filter_frames[1:]:
+                    frame['fuzzy_frame'].clear()
+                    frame['fuzzy_frame'].set_values([])
 
         except Exception as e:
-            print(f"[DEBUG] Error in _on_file_info_click:")
+            print(f"[DEBUG] Error in reload_excel_data_and_update_ui:")
             print(traceback.format_exc())
-            ErrorDialog(self, "Error", f"Error loading PDF: {str(e)}")
+            ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}")
 
-            # Clear PDF viewer on error
-            if hasattr(self.pdf_viewer, "canvas"):
-                self.pdf_viewer.canvas.delete("all")
-            # Disable the confirm button since there's no file to process
-            self.confirm_button.state(["disabled"])
+    def _format_filter2_value(self, value: str, row_idx: int, has_hyperlink: bool = False) -> str:
+        """Format filter2 value with row number and checkmark if hyperlinked."""
+        prefix = "✓ " if has_hyperlink else ""
+        # +2 because Excel is 1-based and has header
+        return f"{prefix}{value} ⟨Excel Row: {row_idx + 2}⟩"
+
+    def _parse_filter2_value(self, formatted_value: str) -> tuple[str, int]:
+        """Parse filter2 value to get original value and row number."""
+        import re
+
+        # Remove checkmark if present
+        formatted_value = formatted_value.replace("✓ ", "", 1)
+
+        match = re.match(r"(.*?)\s*⟨Excel Row:\s*(\d+)⟩", formatted_value)
+        if match:
+            value = match.group(1).strip()
+            row_num = int(match.group(2))
+            return value, row_num - 2  # Convert back to 0-based index
+        return formatted_value, -1

@@ -41,6 +41,7 @@ class ConfigTab(Frame):
         super().__init__(master)
         self.config_manager = config_manager
         self.excel_manager = excel_manager
+        self.filter_frames = []  # Store filter frames for dynamic handling
 
         # Configure base grid weights
         self.grid_columnconfigure(0, weight=1)
@@ -234,39 +235,24 @@ class ConfigTab(Frame):
             "<<ComboboxSelected>>", lambda e: self.update_column_lists()
         )
 
-        # Column Configuration - Full Width
+        # Column Configuration Frame
         column_frame = LabelFrame(main_content, text="Column Configuration", padding=5)
         column_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
-        column_frame.grid_columnconfigure(1, weight=1)
-        column_frame.grid_columnconfigure(3, weight=1)
-        column_frame.grid_columnconfigure(5, weight=1)
+        column_frame.grid_columnconfigure(0, weight=1)
 
-        # First Column
-        Label(column_frame, text="First:", style="Section.TLabel").grid(
-            row=0, column=0, sticky="w", pady=2
-        )
-        self.filter1_frame = FuzzySearchFrame(
-            column_frame, width=30, identifier="config_filter1"
-        )
-        self.filter1_frame.grid(row=0, column=1, padx=2, sticky="ew")
+        # Create container for filters
+        self.filters_container = Frame(column_frame)
+        self.filters_container.grid(row=0, column=0, sticky="nsew")
+        self.filters_container.grid_columnconfigure(0, weight=1)
 
-        # Second Column
-        Label(column_frame, text="Second:", style="Section.TLabel").grid(
-            row=0, column=2, sticky="w", pady=2, padx=2
+        # Add button for new filters
+        add_filter_btn = Button(
+            column_frame,
+            text="Add Filter",
+            style="Action.TButton",
+            command=lambda: self._add_filter("", None)
         )
-        self.filter2_frame = FuzzySearchFrame(
-            column_frame, width=30, identifier="config_filter2"
-        )
-        self.filter2_frame.grid(row=0, column=3, padx=2, sticky="ew")
-
-        # Third Column
-        Label(column_frame, text="Third:", style="Section.TLabel").grid(
-            row=0, column=4, sticky="w", pady=2, padx=2
-        )
-        self.filter3_frame = FuzzySearchFrame(
-            column_frame, width=30, identifier="config_filter3"
-        )
-        self.filter3_frame.grid(row=0, column=5, padx=2, sticky="ew")
+        add_filter_btn.grid(row=1, column=0, sticky="ew", pady=(10, 0))
 
         # Template Configuration
         template_frame = LabelFrame(main_content, text="Output Template", padding=5)
@@ -334,10 +320,28 @@ class ConfigTab(Frame):
         """Load current configuration into UI elements."""
         self.update_preset_list()
         config = self.config_manager.get_config()
+        
+        # Load basic settings
         self.source_folder_entry.insert(0, config["source_folder"])
         self.processed_folder_entry.insert(0, config["processed_folder"])
         self.excel_file_entry.insert(0, config["excel_file"])
         self.template_entry.insert(0, config["output_template"])
+
+        # Clear existing filters
+        for frame in self.filter_frames:
+            frame['frame'].destroy()
+        self.filter_frames.clear()
+
+        # Load filters from config
+        filter_columns = self._get_filter_columns_from_config(config)
+        
+        # Always ensure at least 3 filters
+        while len(filter_columns) < 3:
+            filter_columns.append("")
+
+        # Create filter frames
+        for i, column in enumerate(filter_columns, 1):
+            self._add_filter(column, f"filter{i}")
 
         if config["excel_file"]:
             self.update_sheet_list()
@@ -394,58 +398,55 @@ class ConfigTab(Frame):
             # Convert columns to strings for comparison
             str_columns = [str(col) for col in columns]
 
-            # Update filters with original column values
-            self.filter1_frame.set_values(columns)
-            self.filter2_frame.set_values(columns)
-            self.filter3_frame.set_values(columns)
-
             config = self.config_manager.get_config()
 
-            # Compare using string versions
-            if str(config.get("filter1_column")) in str_columns:
-                self.filter1_frame.set(config["filter1_column"])
-            if str(config.get("filter2_column")) in str_columns:
-                self.filter2_frame.set(config["filter2_column"])
-            if str(config.get("filter3_column")) in str_columns:
-                self.filter3_frame.set(config["filter3_column"])
+            # Update each filter frame with available columns
+            for frame in self.filter_frames:
+                frame['fuzzy_frame'].set_values(columns)
+
+            # Set selected values from config
+            for i, frame in enumerate(self.filter_frames, 1):
+                column_key = f"filter{i}_column"
+                if str(config.get(column_key)) in str_columns:
+                    frame['fuzzy_frame'].set(config[column_key])
+                    frame['label']['text'] = config[column_key]
 
         except Exception as e:
             ErrorDialog(self, "Error Updating Columns", e)
 
     def save_config(self):
-        """Save current configuration."""
+        """Save current configuration with dynamic filters."""
         try:
+            # Create new config with only current values
             new_config = {
                 "source_folder": self.source_folder_entry.get(),
                 "processed_folder": self.processed_folder_entry.get(),
                 "excel_file": self.excel_file_entry.get(),
                 "excel_sheet": self.sheet_combobox.get(),
-                "filter1_column": self.filter1_frame.get(),
-                "filter2_column": self.filter2_frame.get(),
-                "filter3_column": self.filter3_frame.get(),
-                "dropdown1_column": self.filter1_frame.get(),  # Keep backward compatibility
-                "dropdown2_column": self.filter2_frame.get(),  # Keep backward compatibility
                 "output_template": self.template_entry.get(),
             }
 
-            # Basic validation
-            if not all(
-                [
-                    new_config["source_folder"],
-                    new_config["processed_folder"],
-                    new_config["excel_file"],
-                    new_config["excel_sheet"],
-                    new_config["filter1_column"],
-                    new_config["filter2_column"],
-                    new_config["filter3_column"],
-                    new_config["output_template"],
-                ]
-            ):
-                ErrorDialog(
-                    self, "Validation Error", "Please fill in all required fields"
-                )
+            # Add current filter columns to config
+            for i, filter_dict in enumerate(self.filter_frames, 1):
+                filter_value = filter_dict['fuzzy_frame'].get()
+                new_config[f"filter{i}_column"] = filter_value
+
+            # Basic validation - ensure at least 3 filters are configured
+            required_fields = [
+                "source_folder",
+                "processed_folder",
+                "excel_file",
+                "excel_sheet",
+                "output_template",
+            ]
+            required_fields.extend([f"filter{i}_column" for i in range(1, 4)])  # First 3 filters are required
+
+            if not all(new_config.get(field) for field in required_fields):
+                ErrorDialog(self, "Validation Error", "Please fill in all required fields (including at least 3 filters)")
                 return
 
+            # Reset config to defaults first, then update with new values
+            self.config_manager.reset_config()
             self.config_manager.update_config(new_config)
             self.show_status_message("Configuration saved successfully!")
 
@@ -473,30 +474,73 @@ class ConfigTab(Frame):
             self.source_folder_entry.delete(0, END)
             self.processed_folder_entry.delete(0, END)
             self.excel_file_entry.delete(0, END)
-            self.sheet_combobox["values"] = ()
-            self.sheet_combobox.set("")
-            self.filter1_frame.clear()
-            self.filter2_frame.clear()
-            self.filter3_frame.clear()
             self.template_entry.delete(0, END)
 
-            # Load preset values
+            # Load basic settings
             self.source_folder_entry.insert(0, preset_config.get("source_folder", ""))
-            self.processed_folder_entry.insert(
-                0, preset_config.get("processed_folder", "")
-            )
+            self.processed_folder_entry.insert(0, preset_config.get("processed_folder", ""))
             self.excel_file_entry.insert(0, preset_config.get("excel_file", ""))
-            self.update_sheet_list(preset_config)
             self.template_entry.insert(0, preset_config.get("output_template", ""))
-            self.filter1_frame.set(preset_config.get("filter1_column", ""))
-            self.filter2_frame.set(preset_config.get("filter2_column", ""))
-            self.filter3_frame.set(preset_config.get("filter3_column", ""))
 
-            self.save_config()
+            # Update sheet list first
+            self.update_sheet_list(preset_config)
+
+            # Clear existing filters
+            for frame in self.filter_frames:
+                frame['frame'].destroy()
+            self.filter_frames.clear()
+
+            # Load filters from preset
+            filter_columns = self._get_filter_columns_from_config(preset_config)
+            
+            # Always ensure at least 3 filters
+            while len(filter_columns) < 3:
+                filter_columns.append("")
+
+            # Create filter frames
+            for i, column in enumerate(filter_columns, 1):
+                self._add_filter(column, f"filter{i}")
+
+            # Update column lists after a short delay to ensure widgets are ready
+            self.after(100, lambda: self._update_columns_from_preset(preset_config))
+
             self.show_status_message(f"Loaded preset: {preset_name}")
 
         except Exception as e:
             ErrorDialog(self, "Load Preset Error", e)
+
+    def _update_columns_from_preset(self, preset_config):
+        """Update column lists with preset values."""
+        try:
+            excel_file = self.excel_file_entry.get()
+            sheet_name = self.sheet_combobox.get()
+
+            if not excel_file or not sheet_name:
+                return
+
+            # Load Excel data
+            self.excel_manager.load_excel_data(excel_file, sheet_name)
+            columns = self.excel_manager.get_column_names()
+
+            # Convert columns to strings for comparison
+            str_columns = [str(col) for col in columns]
+
+            # Update each filter frame with available columns
+            for frame in self.filter_frames:
+                frame['fuzzy_frame'].set_values(columns)
+
+            # Set selected values from preset
+            for i, frame in enumerate(self.filter_frames, 1):
+                column_key = f"filter{i}_column"
+                if column_key in preset_config and str(preset_config[column_key]) in str_columns:
+                    frame['fuzzy_frame'].set(preset_config[column_key])
+                    frame['label']['text'] = preset_config[column_key]
+
+            # Save configuration after updating
+            self.after(100, self.save_config)
+
+        except Exception as e:
+            ErrorDialog(self, "Error Updating Columns", e)
 
     def save_as_preset(self):
         """Save current configuration as a new preset."""
@@ -509,16 +553,19 @@ class ConfigTab(Frame):
             if not preset_name:
                 return
 
+            # Get current configuration
             current_config = {
                 "source_folder": self.source_folder_entry.get(),
                 "processed_folder": self.processed_folder_entry.get(),
                 "excel_file": self.excel_file_entry.get(),
                 "excel_sheet": self.sheet_combobox.get(),
-                "filter1_column": self.filter1_frame.get(),
-                "filter2_column": self.filter2_frame.get(),
-                "filter3_column": self.filter3_frame.get(),
                 "output_template": self.template_entry.get(),
             }
+
+            # Add filter columns to config
+            for i, filter_dict in enumerate(self.filter_frames, 1):
+                filter_value = filter_dict['fuzzy_frame'].get()
+                current_config[f"filter{i}_column"] = filter_value
 
             self.config_manager.save_preset(preset_name, current_config)
             self.update_preset_list()
@@ -561,3 +608,125 @@ class ConfigTab(Frame):
         self.canvas.itemconfig(
             "all", width=self.winfo_width() - self.scrollbar.winfo_width()
         )
+
+    def _setup_filters(self, parent: Widget) -> None:
+        """Setup dynamic filter controls with improved styling."""
+        # Create a frame to hold all filter frames
+        self.filters_container = Frame(parent)
+        self.filters_container.pack(fill="x", expand=True)
+
+        # Add button to add new filter
+        add_filter_btn = Button(
+            parent,
+            text="Add Filter",
+            style="Action.TButton",
+            command=self._add_filter
+        )
+        add_filter_btn.pack(fill="x", pady=(10, 0))
+
+        # Load initial filters from config
+        config = self.config_manager.get_config()
+        filter_columns = self._get_filter_columns_from_config(config)
+        
+        # Always ensure at least 3 filters
+        while len(filter_columns) < 3:
+            filter_columns.append("")
+
+        # Create initial filters
+        for i, column in enumerate(filter_columns, 1):
+            self._add_filter(column, f"filter{i}")
+
+    def _get_filter_columns_from_config(self, config: dict) -> list:
+        """Extract filter columns from config."""
+        filter_columns = []
+        i = 1
+        while True:
+            filter_key = f"filter{i}_column"
+            if filter_key not in config:
+                break
+            filter_columns.append(config[filter_key])
+            i += 1
+        return filter_columns
+
+    def _add_filter(self, column_name: str = "", identifier: str = None) -> None:
+        """Add a new filter frame to the configuration."""
+        filter_num = len(self.filter_frames) + 1
+        if identifier is None:
+            identifier = f"filter{filter_num}"
+
+        # Create frame for this filter
+        filter_frame = Frame(self.filters_container)
+        filter_frame.pack(fill="x", pady=(0, 15))
+
+        # Label for the filter
+        label = Label(filter_frame, text=column_name or f"Filter {filter_num}:", style="Header.TLabel")
+        label.pack(pady=(0, 5))
+
+        # Create fuzzy search frame
+        fuzzy_frame = FuzzySearchFrame(
+            filter_frame,
+            width=30,
+            identifier=f"config_{identifier}"
+        )
+        fuzzy_frame.pack(fill="x")
+
+        # Add remove button if not one of the first three filters
+        if filter_num > 3:
+            remove_btn = Button(
+                filter_frame,
+                text="Remove",
+                style="Action.TButton",
+                command=lambda f=filter_frame: self._remove_filter(f)
+            )
+            remove_btn.pack(pady=(5, 0))
+
+        # Store references
+        self.filter_frames.append({
+            'frame': filter_frame,
+            'label': label,
+            'fuzzy_frame': fuzzy_frame,
+            'identifier': identifier
+        })
+
+        # Initialize with available columns if Excel file is loaded
+        try:
+            excel_file = self.excel_file_entry.get()
+            sheet_name = self.sheet_combobox.get()
+            if excel_file and sheet_name:
+                # Load Excel data if not already loaded
+                if self.excel_manager.excel_data is None:
+                    self.excel_manager.load_excel_data(excel_file, sheet_name)
+                
+                # Get column names and set them as available values
+                columns = self.excel_manager.get_column_names()
+                fuzzy_frame.set_values(columns)
+
+                # If column_name is provided and exists in columns, select it
+                if column_name and column_name in columns:
+                    fuzzy_frame.set(column_name)
+                    label['text'] = column_name
+        except Exception as e:
+            print(f"[DEBUG] Error initializing filter values: {str(e)}")
+
+        # Update the configuration after adding the filter
+        self.after(100, self.save_config)
+
+    def _remove_filter(self, filter_frame: Frame) -> None:
+        """Remove a filter frame from the configuration."""
+        # Find and remove the filter from our stored references
+        for i, filter_dict in enumerate(self.filter_frames):
+            if filter_dict['frame'] == filter_frame:
+                self.filter_frames.pop(i)
+                break
+        
+        # Destroy the frame
+        filter_frame.destroy()
+
+        # Update the remaining filter labels
+        self._update_filter_labels()
+
+    def _update_filter_labels(self) -> None:
+        """Update the labels of all filters to maintain sequential numbering."""
+        for i, filter_dict in enumerate(self.filter_frames, 1):
+            if not filter_dict['label']['text']:  # Only update if no specific column name
+                filter_dict['label']['text'] = f"Filter {i}:"

@@ -108,8 +108,12 @@ class PDFManager:
             print(f"[DEBUG] Creating processed folder: {processed_folder}")
             makedirs(processed_folder)
 
-        # Add processed_folder to template data
+        # Add processed_folder and filter values to template data
         template_data["processed_folder"] = processed_folder
+        
+        # Add filter values to template data
+        for i, value in enumerate(task.filter_values, 1):
+            template_data[f"filter{i}"] = value
 
         # Generate new filepath using template
         try:
@@ -236,74 +240,72 @@ class PDFManager:
         raise Exception("Failed to process PDF after exhausting all retries")
 
     def get_next_pdf(self, source_folder: str, active_tasks: Dict[str, PDFTask] = None) -> Optional[str]:
-        """Get the next PDF file from the source folder.
+        """Get the next available PDF file from the source folder.
         
         Args:
             source_folder: The folder to scan for PDFs
             active_tasks: Dictionary of currently active tasks to avoid reloading files being processed
+            
+        Returns:
+            Optional[str]: Path to the next available PDF file, or None if no files are available
         """
         try:
             if not is_path_available(source_folder):
                 raise Exception("Network path is not available")
 
-            # Get list of PDF files
+            # Set timeout for network operations
+            original_timeout = getdefaulttimeout()
+            setdefaulttimeout(self._network_timeout)
+            
             try:
-                original_timeout = getdefaulttimeout()
-                setdefaulttimeout(self._network_timeout)
-                try:
-                    # Get all PDF files
-                    all_pdf_files = sorted([
-                        f for f in os_listdir(source_folder)
-                        if f.lower().endswith(".pdf")
-                    ])
-                    
-                    # Filter out files that are currently being processed
-                    if active_tasks:
-                        active_files = set()
-                        for task in active_tasks.values():
-                            if task.status in ["pending", "processing"]:
-                                active_file = path.basename(task.pdf_path)
-                                active_files.add(active_file)
-                        
-                        pdf_files = [f for f in all_pdf_files if f not in active_files]
-                        print(f"[DEBUG] Filtered out {len(all_pdf_files) - len(pdf_files)} active files from next file selection")
-                    else:
-                        pdf_files = all_pdf_files
-                    
-                    self.current_file_list = pdf_files
-                finally:
-                    setdefaulttimeout(original_timeout)
-            except Exception as e:
-                if isinstance(e, SocketTimeout):
-                    raise Exception("Network timeout while accessing PDF folder")
-                raise Exception(f"Error reading source folder: {str(e)}")
+                # Get all PDF files and sort by creation time (oldest first)
+                pdf_files = []
+                for f in os_listdir(source_folder):
+                    if f.lower().endswith(".pdf"):
+                        full_path = path.join(source_folder, f)
+                        try:
+                            creation_time = path.getctime(full_path)
+                            pdf_files.append((creation_time, f))
+                        except OSError:
+                            # Skip files that can't be accessed
+                            continue
+                
+                # Sort by creation time
+                pdf_files.sort()  # Will sort by creation_time since it's first element
+                pdf_files = [f for _, f in pdf_files]  # Extract just the filenames
+                
+                # Filter out files that are currently being processed
+                if active_tasks:
+                    active_files = {
+                        path.basename(task.pdf_path)
+                        for task in active_tasks.values()
+                        if task.status in ["pending", "processing"]
+                    }
+                    pdf_files = [f for f in pdf_files if f not in active_files]
+                    print(f"[DEBUG] Filtered out {len(active_files)} active files from next file selection")
 
-            # If no PDF files found
-            if not self.current_file_list:
-                return None
+                # If no files available after filtering
+                if not pdf_files:
+                    return None
 
-            # Move to next file
-            self.current_file_index += 1
-
-            # If we've reached the end, start over
-            if self.current_file_index >= len(self.current_file_list):
-                self.current_file_index = 0
-
-            # Return full path of next PDF
-            if self.current_file_list:
-                next_pdf = path.join(
-                    source_folder, self.current_file_list[self.current_file_index]
-                )
+                # Get the oldest file (first in sorted list)
+                next_pdf = path.join(source_folder, pdf_files[0])
+                
                 # Clear cache if different file
                 if next_pdf != self.cached_pdf_path:
                     self.clear_cache()
                     self.current_rotation = 0  # Reset rotation when moving to a new file
+                
                 return next_pdf
 
-            return None
+            finally:
+                setdefaulttimeout(original_timeout)
+                
         except Exception as e:
             self.clear_cache()  # Clear cache on error
-            raise e
+            if isinstance(e, SocketTimeout):
+                raise Exception("Network timeout while accessing PDF file")
+            raise Exception(f"Error accessing PDF folder: {str(e)}")
 
     def clear_cache(self):
         """Clear the cached PDF document."""
