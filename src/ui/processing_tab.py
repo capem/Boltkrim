@@ -174,12 +174,15 @@ class ProcessingQueue:
                 # Load Excel data and find matching row - ExcelManager handles its own errors
                 excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
                 
-                # Get filter columns and values
-                filter_columns = [
-                    config["filter1_column"],
-                    config["filter2_column"],
-                    config["filter3_column"]
-                ]
+                # Get filter columns dynamically based on the number of filter values
+                filter_columns = []
+                for i in range(1, len(task_to_process.filter_values) + 1):
+                    column_key = f"filter{i}_column"
+                    if column_key not in config:
+                        raise Exception(f"Missing filter column configuration for filter {i}")
+                    filter_columns.append(config[column_key])
+
+                # Find matching row with dynamic filter columns
                 row_data, row_idx = excel_manager.find_matching_row(
                     filter_columns=filter_columns,
                     filter_values=task_to_process.filter_values
@@ -217,12 +220,12 @@ class ProcessingQueue:
                 DATE_FORMATS = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d"]
 
                 # Process all columns in one pass
-                template_data = {
-                    # Add generic filter names first
-                    "filter1": row_data[config["filter1_column"]],
-                    "filter2": row_data[config["filter2_column"]],
-                    "filter3": row_data[config["filter3_column"]],
-                }
+                template_data = {}
+
+                # Add filter values to template data
+                for i, (column, value) in enumerate(zip(filter_columns, task_to_process.filter_values), 1):
+                    template_data[f"filter{i}"] = value
+                    template_data[column] = value
 
                 # Process all columns in one pass
                 for column in row_data.index:
@@ -246,8 +249,7 @@ class ProcessingQueue:
 
                             if parsed_date is None:
                                 raise ValueError(
-                                    f"Could not parse date '{
-                                                 value}' in column '{column}'"
+                                    f"Could not parse date '{value}' in column '{column}'"
                                 )
 
                             template_data[column] = parsed_date
@@ -777,12 +779,24 @@ class ProcessingTab(Frame):
             # Get selected values up to current filter
             selected_values = []
             for i in range(filter_index + 1):
-                selected_values.append(str(self.filter_frames[i]['fuzzy_frame'].get()).strip())
+                value = str(self.filter_frames[i]['fuzzy_frame'].get()).strip()
+                if not value:  # If any previous filter is empty, stop processing
+                    # Clear all subsequent filters
+                    for j in range(i + 1, len(self.filter_frames)):
+                        self.filter_frames[j]['fuzzy_frame'].clear()
+                        self.filter_frames[j]['fuzzy_frame'].set_values([])
+                    return
+                selected_values.append(value)
 
-            # Filter DataFrame based on selected values
-            df = self.excel_manager.excel_data
+            # Start with the full DataFrame
+            df = self.excel_manager.excel_data.copy()
+
+            # Apply filters sequentially based on selected values
             for i, value in enumerate(selected_values):
                 column = config[f"filter{i+1}_column"]
+                # For filter2, we need to handle the formatted value
+                if i == 1:  # Second filter
+                    value, _ = self._parse_filter2_value(value)
                 df = df[df[column].astype(str).str.strip() == value]
 
             # Update next filter's values if there is one
@@ -960,8 +974,15 @@ class ProcessingTab(Frame):
                     frame['fuzzy_frame'].clear()
 
                 # Reset first filter values if available
-                if len(self.filter_frames) > 0 and hasattr(self, 'all_values1'):
-                    self.filter_frames[0]['fuzzy_frame'].set_values(self.all_values1)
+                if len(self.filter_frames) > 0:
+                    config = self.config_manager.get_config()
+                    if config["excel_file"] and config["excel_sheet"] and self.excel_manager.excel_data is not None:
+                        first_column = config.get("filter1_column")
+                        if first_column:
+                            df = self.excel_manager.excel_data
+                            values = sorted(df[first_column].astype(str).unique().tolist())
+                            values = [str(x).strip() for x in values]
+                            self.filter_frames[0]['fuzzy_frame'].set_values(values)
 
                 # Focus the first filter
                 if self.filter_frames:
@@ -1030,8 +1051,15 @@ class ProcessingTab(Frame):
                     frame['fuzzy_frame'].clear()
 
                 # Reset first filter values if available
-                if len(self.filter_frames) > 0 and hasattr(self, 'all_values1'):
-                    self.filter_frames[0]['fuzzy_frame'].set_values(self.all_values1)
+                if len(self.filter_frames) > 0:
+                    config = self.config_manager.get_config()
+                    if config["excel_file"] and config["excel_sheet"] and self.excel_manager.excel_data is not None:
+                        first_column = config.get("filter1_column")
+                        if first_column:
+                            df = self.excel_manager.excel_data
+                            values = sorted(df[first_column].astype(str).unique().tolist())
+                            values = [str(x).strip() for x in values]
+                            self.filter_frames[0]['fuzzy_frame'].set_values(values)
 
                 # Focus the first filter
                 if self.filter_frames:
@@ -1127,7 +1155,7 @@ class ProcessingTab(Frame):
                 self._update_status("No file selected")
                 return
 
-            # Get all filter values
+            # Get all filter values and ensure they're all filled
             filter_values = []
             for frame in self.filter_frames:
                 value = frame['fuzzy_frame'].get()
@@ -1135,6 +1163,18 @@ class ProcessingTab(Frame):
                     self._update_status("Select all filters")
                     return
                 filter_values.append(value)
+
+            # Get the config to access filter columns
+            config = self.config_manager.get_config()
+            
+            # Get all filter column names from config
+            filter_columns = []
+            for i in range(1, len(filter_values) + 1):
+                column_key = f"filter{i}_column"
+                if column_key in config:
+                    filter_columns.append(config[column_key])
+                else:
+                    raise Exception(f"Missing filter column configuration for filter {i}")
 
             # Parse the actual value and row index from filter2 value if it exists
             if len(filter_values) > 1:
@@ -1259,8 +1299,8 @@ class ProcessingTab(Frame):
             # Load Excel data only if needed
             excel_loaded = self.excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
 
-            # Cache hyperlinks for filter2 column only if Excel data was reloaded
-            if excel_loaded and len(self.filter_frames) > 1:
+            # Cache hyperlinks for filter2 column regardless of Excel reload status
+            if len(self.filter_frames) > 1:
                 filter2_column = config.get("filter2_column")
                 if filter2_column:
                     self.excel_manager.cache_hyperlinks_for_column(
@@ -1283,13 +1323,13 @@ class ProcessingTab(Frame):
                     return ""
                 return str(val).strip()
 
-            # Store all values for the first filter only if Excel was reloaded
-            if excel_loaded and len(self.filter_frames) > 0:
+            # Store all values for the first filter regardless of Excel reload status
+            if len(self.filter_frames) > 0:
                 first_column = config.get("filter1_column")
                 if first_column:
-                    self.all_values1 = sorted(df[first_column].astype(str).unique().tolist())
-                    self.all_values1 = [safe_convert_to_str(x) for x in self.all_values1]
-                    self.filter_frames[0]['fuzzy_frame'].set_values(self.all_values1)
+                    values = sorted(df[first_column].astype(str).unique().tolist())
+                    values = [safe_convert_to_str(x) for x in values]
+                    self.filter_frames[0]['fuzzy_frame'].set_values(values)
 
                 # Clear other filters
                 for frame in self.filter_frames[1:]:

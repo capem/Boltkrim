@@ -442,14 +442,18 @@ class ExcelManager:
                 raise Exception("Excel data not loaded")
 
             if len(filter_columns) != len(filter_values):
-                raise Exception("Number of filter columns and values must match")
+                raise Exception(f"Number of filter columns ({len(filter_columns)}) and values ({len(filter_values)}) must match")
+
+            print(f"[DEBUG] Finding row with filters: {dict(zip(filter_columns, filter_values))}")
 
             df = self.excel_data
 
             def create_mask(col: str, value: str) -> Series:
                 """Create a boolean mask for filtering DataFrame."""
                 if col not in df.columns:
-                    raise Exception(f"Column '{col}' not found in Excel file")
+                    raise Exception(f"Column '{col}' not found in Excel file. Available columns: {', '.join(df.columns)}")
+
+                print(f"[DEBUG] Creating mask for column '{col}' with value '{value}'")
 
                 # Convert column to string for comparison
                 df[col] = df[col].astype(str)
@@ -459,12 +463,14 @@ class ExcelManager:
                     try:
                         # Try to parse the date value
                         date_value = pd.to_datetime(value)
+                        print(f"[DEBUG] Parsed date value: {date_value}")
                         # Convert column to datetime if not already
                         if not is_datetime64_any_dtype(df[col]):
                             df[col] = pd.to_datetime(df[col], errors='coerce')
                         return df[col] == date_value
                     except:
                         # If date parsing fails, fall back to string comparison
+                        print(f"[DEBUG] Date parsing failed, using string comparison for '{col}'")
                         return df[col].str.strip() == str(value).strip()
                 else:
                     return df[col].str.strip() == str(value).strip()
@@ -478,18 +484,23 @@ class ExcelManager:
                 final_mask &= mask
 
             matching_rows = df[final_mask]
+            print(f"[DEBUG] Found {len(matching_rows)} matching rows")
 
             if len(matching_rows) == 0:
+                print("[DEBUG] No matching rows found")
                 return None, None
             elif len(matching_rows) == 1:
                 row_idx = matching_rows.index[0]
+                print(f"[DEBUG] Found exactly one match at row index {row_idx}")
                 return matching_rows.iloc[0], row_idx
             else:
                 # If multiple matches, return the first one
                 row_idx = matching_rows.index[0]
+                print(f"[DEBUG] Found multiple matches, using first match at row index {row_idx}")
                 return matching_rows.iloc[0], row_idx
 
         except Exception as e:
+            print(f"[DEBUG] Error in find_matching_row: {str(e)}")
             raise Exception(f"Error finding matching row: {str(e)}")
 
     def has_hyperlink(self, row_idx: int) -> bool:
@@ -524,58 +535,101 @@ class ExcelManager:
         """
         try:
             if len(filter_columns) != len(filter_values):
-                raise Exception("Number of filter columns and values must match")
+                raise Exception(f"Number of filter columns ({len(filter_columns)}) and values ({len(filter_values)}) must match")
 
-            # Create a new row with NaN values
-            new_row = pd.Series(index=self.excel_data.columns)
-
-            # Set the filter values
-            for col, val in zip(filter_columns, filter_values):
-                if col not in self.excel_data.columns:
-                    raise Exception(f"Column '{col}' not found in Excel file")
-                new_row[col] = val
+            print(f"[DEBUG] Adding new row with values: {dict(zip(filter_columns, filter_values))}")
 
             # Create a temporary backup
             backup_file = excel_file + ".bak"
             copy2(excel_file, backup_file)
+            print(f"[DEBUG] Created backup at {backup_file}")
 
             try:
-                # Load workbook to preserve formatting
+                # Load workbook
                 wb = load_workbook(excel_file)
                 ws = wb[sheet_name]
 
-                # Add new row to DataFrame
-                self.excel_data = pd.concat(
-                    [self.excel_data, pd.DataFrame([new_row])],
-                    ignore_index=True
-                )
+                # Get header row to map column names to indices
+                header_row = ws[1]
+                col_indices = {cell.value: idx + 1 for idx, cell in enumerate(header_row)}
 
-                # Write to Excel
-                with pd.ExcelWriter(
-                    excel_file,
-                    engine="openpyxl",
-                    mode="a",
-                    if_sheet_exists="overlay"
-                ) as writer:
-                    self.excel_data.to_excel(
-                        writer,
-                        sheet_name=sheet_name,
-                        index=False
-                    )
+                # Verify all filter columns exist
+                for col in filter_columns:
+                    if col not in col_indices:
+                        raise Exception(f"Column '{col}' not found in Excel file. Available columns: {', '.join(col_indices.keys())}")
 
-                # Get the new row index
-                row_idx = len(self.excel_data) - 1
+                # Find the last row with data
+                last_row = ws.max_row
+                new_row_idx = last_row + 1
+
+                # First pass: Copy all formats from the template row
+                template_row = last_row
+                for col_idx in range(1, len(header_row) + 1):
+                    template_cell = ws.cell(row=template_row, column=col_idx)
+                    new_cell = ws.cell(row=new_row_idx, column=col_idx)
+                    
+                    # Copy number format and style
+                    new_cell.number_format = template_cell.number_format
+                    new_cell._style = template_cell._style
+
+                # Second pass: Set values with proper type conversion
+                for col, val in zip(filter_columns, filter_values):
+                    col_idx = col_indices[col]
+                    template_cell = ws.cell(row=template_row, column=col_idx)
+                    new_cell = ws.cell(row=new_row_idx, column=col_idx)
+                    
+                    # Convert value based on the column type
+                    if "DATE" in col.upper() and val:
+                        try:
+                            # Try to parse as date
+                            date_val = pd.to_datetime(val)
+                            new_cell.value = date_val.to_pydatetime()
+                        except:
+                            new_cell.value = val
+                    elif "MNT" in col.upper() or any(num_indicator in col.upper() for num_indicator in ["MONTANT", "NOMBRE", "NUM"]):
+                        try:
+                            # Handle numeric values, preserving decimal separator
+                            if isinstance(val, str):
+                                # Replace comma with dot for conversion
+                                num_val = float(val.replace(',', '.'))
+                                new_cell.value = num_val
+                            else:
+                                new_cell.value = float(val)
+                        except:
+                            new_cell.value = val
+                    else:
+                        new_cell.value = val
+                    
+                    print(f"[DEBUG] Set value '{val}' for column '{col}'")
+
+                # Save the workbook
+                wb.save(excel_file)
+
+                # Update the cached DataFrame to stay in sync
+                if self.excel_data is not None:
+                    new_row_data = pd.Series(index=self.excel_data.columns)
+                    for col, val in zip(filter_columns, filter_values):
+                        new_row_data[col] = val
+                    self.excel_data = pd.concat([self.excel_data, pd.DataFrame([new_row_data])], ignore_index=True)
+
+                # Get the new row index for return value (0-based)
+                row_idx = new_row_idx - 2  # Convert to 0-based index
+                print(f"[DEBUG] Successfully added new row at index {row_idx}")
 
                 # Remove backup if successful
                 remove(backup_file)
+                print("[DEBUG] Removed backup file after successful write")
 
-                return new_row, row_idx
+                return new_row_data, row_idx
 
             except Exception as e:
+                print(f"[DEBUG] Error while writing new row: {str(e)}")
                 # Restore from backup
                 copy2(backup_file, excel_file)
                 remove(backup_file)
+                print("[DEBUG] Restored from backup due to error")
                 raise Exception(f"Failed to add new row: {str(e)}")
 
         except Exception as e:
+            print(f"[DEBUG] Error in add_new_row: {str(e)}")
             raise Exception(f"Error adding new row: {str(e)}")
