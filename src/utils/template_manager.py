@@ -41,13 +41,26 @@ class TemplateManager:
             result = ' '.join(result.split())
             return result
         
+        def get_first_word(s: str) -> str:
+            """Get the first word from a string."""
+            return s.split()[0] if s else ''
+            
+        def split_by_no_get_last(s: str) -> str:
+            """Split string by N° and get the last element, preserving the N° prefix."""
+            if 'N°' in s:
+                parts = s.split('N°')
+                return f"N°{parts[-1].strip()}"
+            return s.strip()
+        
         self.string_operations: Dict[str, Callable] = {
             'upper': str.upper,
             'lower': str.lower,
             'title': str.title,
             'replace': lambda s, old, new: s.replace(old, new),
             'slice': lambda s, start, end=None: s[int(start):None if end == '' else int(end)],
-            'sanitize': sanitize_path
+            'sanitize': sanitize_path,
+            'first_word': get_first_word,
+            'split_no_last': split_by_no_get_last
         }
     
     def _parse_field(self, field: str) -> tuple[str, list[str]]:

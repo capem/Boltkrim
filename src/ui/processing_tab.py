@@ -660,11 +660,18 @@ class ProcessingTab(Frame):
 
         self.confirm_button = Button(
             actions_frame,
-            text="Process File (Enter)",
+            text="Process File",
             command=self.process_current_file,
             style="Success.TButton",
         )
         self.confirm_button.pack(fill="x", pady=(0, 5))
+        
+        # Add key bindings for button activation when focused
+        def trigger_if_focused(event):
+            if event.widget.focus_get() == event.widget:
+                self.process_current_file()
+                
+        self.confirm_button.bind("<Return>", trigger_if_focused)
 
         self.skip_button = Button(
             actions_frame,
