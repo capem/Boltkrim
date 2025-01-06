@@ -761,13 +761,12 @@ class ProcessingTab(Frame):
         """Handle tab key in filter to move focus to next filter or confirm button."""
         current_frame = self.filter_frames[filter_index]['fuzzy_frame']
         
-        if current_frame.listbox.winfo_ismapped():
-            if current_frame.listbox.size() > 0:
-                if not current_frame.listbox.curselection():
-                    current_frame.listbox.selection_clear(0, TkEND)
-                    current_frame.listbox.selection_set(0)
-                    current_frame._on_select(None)
-                    return "break"  # Stop here if we selected an item
+        if current_frame.listbox.winfo_ismapped() and current_frame.listbox.size() > 0:
+            if not current_frame.listbox.curselection():
+                current_frame.listbox.selection_clear(0, TkEND)
+                current_frame.listbox.selection_set(0)
+                current_frame._on_select(None)
+                return "break"  # Stop here if we selected an item
 
         # Move focus to next filter or confirm button
         if filter_index < len(self.filter_frames) - 1:
@@ -812,7 +811,7 @@ class ProcessingTab(Frame):
                 next_column = config[f"filter{filter_index+2}_column"]
                 
                 # Special handling for filter2 (index 1) to include row information
-                if filter_index == 0:
+                if filter_index == 0:  # This means we're updating filter2
                     filter_values = []
                     for idx, row in df.iterrows():
                         value = str(row[next_column]).strip()
