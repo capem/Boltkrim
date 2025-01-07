@@ -22,7 +22,7 @@ class PDFViewer(ttkFrame):
         self.pdf_manager = pdf_manager
         self.current_image: Optional[PILPhotoImage] = None
         self.current_pdf: Optional[str] = None
-        self.zoom_level = 1.0
+        self.zoom_level = 1.25
 
         # Configure grid weights
         self.grid_columnconfigure(0, weight=1)
@@ -185,7 +185,7 @@ class PDFViewer(ttkFrame):
             self._update_scrollbar_visibility()
 
     def _center_image(self) -> None:
-        """Center the PDF image in the canvas."""
+        """Center the PDF image horizontally and align to top in the canvas."""
         if not self.current_image:
             return
 
@@ -195,22 +195,21 @@ class PDFViewer(ttkFrame):
         image_width = self.current_image.width()
         image_height = self.current_image.height()
 
-        # Calculate centering offsets
+        # Calculate horizontal centering offset, vertical stays at top
         x = max(0, (canvas_width - image_width) // 2)
-        y = max(0, (canvas_height - image_height) // 2)
+        y = 20  # Add small padding from top
 
         # Set scroll region to image bounds plus padding
         scroll_width = max(canvas_width, image_width + x * 2)
-        scroll_height = max(canvas_height, image_height + y * 2)
+        scroll_height = max(canvas_height, image_height + y)
 
         self.canvas.configure(scrollregion=(0, 0, scroll_width, scroll_height))
 
         # Clear and redraw image
         self.canvas.delete("all")
         image_x = (scroll_width - image_width) // 2
-        image_y = (scroll_height - image_height) // 2
         self.canvas.create_image(
-            image_x, image_y, anchor="nw", image=self.current_image
+            image_x, y, anchor="nw", image=self.current_image
         )
 
         # Update scrollbar visibility

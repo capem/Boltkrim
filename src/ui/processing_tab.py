@@ -759,20 +759,12 @@ class ProcessingTab(Frame):
 
     def _handle_filter_tab(self, event: Event, filter_index: int) -> str:
         """Handle tab key in filter to move focus to next filter or confirm button."""
-        current_frame = self.filter_frames[filter_index]['fuzzy_frame']
-        
-        if current_frame.listbox.winfo_ismapped() and current_frame.listbox.size() > 0:
-            if not current_frame.listbox.curselection():
-                current_frame.listbox.selection_clear(0, TkEND)
-                current_frame.listbox.selection_set(0)
-                current_frame._on_select(None)
-                return "break"  # Stop here if we selected an item
-
         # Move focus to next filter or confirm button
         if filter_index < len(self.filter_frames) - 1:
             self.filter_frames[filter_index + 1]['fuzzy_frame'].entry.focus_set()
         else:
             self.confirm_button.focus_set()
+        
         return "break"
 
     def _on_filter_select(self, filter_index: int) -> None:
@@ -782,16 +774,19 @@ class ProcessingTab(Frame):
             if self.excel_manager.excel_data is None:
                 return
 
-            # Get selected values up to current filter
+            # Get selected values up to current filter using FuzzySearchFrame's get method
             selected_values = []
             for i in range(filter_index + 1):
-                value = str(self.filter_frames[i]['fuzzy_frame'].get()).strip()
+                fuzzy_frame = self.filter_frames[i]['fuzzy_frame']
+                value = fuzzy_frame.get().strip()
                 if not value:  # If any previous filter is empty, stop processing
-                    # Clear all subsequent filters
+                    # Clear all subsequent filters using FuzzySearchFrame's clear method
                     for j in range(i + 1, len(self.filter_frames)):
                         self.filter_frames[j]['fuzzy_frame'].clear()
-                        self.filter_frames[j]['fuzzy_frame'].set_values([])
                     return
+                # For filter2, we need to handle the formatted value when collecting selected values
+                if i == 1:  # Second filter
+                    value, _ = self._parse_filter2_value(value)
                 selected_values.append(value)
 
             # Start with the full DataFrame
@@ -800,9 +795,6 @@ class ProcessingTab(Frame):
             # Apply filters sequentially based on selected values
             for i, value in enumerate(selected_values):
                 column = config[f"filter{i+1}_column"]
-                # For filter2, we need to handle the formatted value
-                if i == 1:  # Second filter
-                    value, _ = self._parse_filter2_value(value)
                 df = df[df[column].astype(str).str.strip() == value]
 
             # Update next filter's values if there is one
@@ -822,13 +814,28 @@ class ProcessingTab(Frame):
                     filter_values = sorted(df[next_column].astype(str).unique().tolist())
                     filter_values = [str(x).strip() for x in filter_values]
 
+                # Use FuzzySearchFrame's methods to update values
                 next_filter['fuzzy_frame'].clear()
                 next_filter['fuzzy_frame'].set_values(filter_values)
 
-                # Clear all subsequent filters
+                # Clear all subsequent filters using FuzzySearchFrame's methods
                 for i in range(filter_index + 2, len(self.filter_frames)):
                     self.filter_frames[i]['fuzzy_frame'].clear()
-                    self.filter_frames[i]['fuzzy_frame'].set_values([])
+
+                # Special handling for when filter2 is being updated directly
+                if filter_index == 1:  # If we're in filter2, reformat its values with checkmarks
+                    current_filter = self.filter_frames[1]  # Get filter2
+                    current_values = []
+                    for idx, row in df.iterrows():
+                        value = str(row[config['filter2_column']]).strip()
+                        has_hyperlink = self.excel_manager.has_hyperlink(idx)
+                        formatted_value = self._format_filter2_value(value, idx, has_hyperlink)
+                        current_values.append(formatted_value)
+                    if current_values:  # Only update if we have values
+                        current_filter['fuzzy_frame'].set_values(current_values)
+
+            # Update confirm button state after filter selection
+            self.update_confirm_button()
 
         except Exception as e:
             print(f"[DEBUG] Error in _on_filter_select: {str(e)}")

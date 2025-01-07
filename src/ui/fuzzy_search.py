@@ -311,16 +311,15 @@ class FuzzySearchFrame(Frame):
         if self.listbox.winfo_ismapped() and self.listbox.size() > 0:
             # If listbox is visible and has items, select the first one
             self._select_value(self.listbox.get(0))
-            
-            # Call parent's tab handler if provided
-            if event and self.on_tab_callback:
-                return self.on_tab_callback(event)
-            
-            # Default behavior: move to next widget
-            if event:
-                event.widget.tk_focusNext().focus()
-            return "break"
-        return None
+        
+        # Always call parent's tab handler if provided, regardless of listbox state
+        if event and self.on_tab_callback:
+            return self.on_tab_callback(event)
+        
+        # Default behavior: move to next widget only if no parent handler
+        if event:
+            event.widget.tk_focusNext().focus()
+        return "break"
 
     def clear(self) -> None:
         """Clear the entry text and listbox results, resetting to initial state."""
