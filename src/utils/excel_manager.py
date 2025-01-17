@@ -302,12 +302,16 @@ class ExcelManager:
             # Add new hyperlink while preserving the cell value
             print("[DEBUG] Adding new hyperlink")
 
-            # Set hyperlink and style the cell to look like a hyperlink
-            cell.hyperlink = Hyperlink(
+            # Create a proper hyperlink with all required properties
+            hyperlink = Hyperlink(
                 ref=cell.coordinate,
                 target=relative_pdf_path,
+                display=cell.value,  # Keep existing cell value as display text
             )
-            cell.font = Font(underline="single", color="0000FF")
+            cell.hyperlink = hyperlink
+
+            # Apply Excel's built-in Hyperlink style which includes visited state handling
+            cell.style = 'Hyperlink'
 
             # Save the workbook
             print("[DEBUG] Saving workbook")
@@ -581,22 +585,41 @@ class ExcelManager:
                     # Convert value based on the column type
                     if "DATE" in col.upper() and val:
                         try:
-                            # Try to parse as date
-                            date_val = pd.to_datetime(val)
+                            # Try to parse date in French format first (dd/mm/yyyy)
+                            french_date_formats = ['%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y', '%d_%m_%Y']
+                            date_val = None
+                            
+                            for fmt in french_date_formats:
+                                try:
+                                    date_val = pd.to_datetime(val, format=fmt)
+                                    break
+                                except:
+                                    continue
+                                    
+                            if date_val is None:
+                                # Fallback to pandas default parser
+                                date_val = pd.to_datetime(val)
+                                
                             new_cell.value = date_val.to_pydatetime()
+                            # Set French date format
+                            new_cell.number_format = 'DD/MM/YYYY'
                         except:
                             new_cell.value = val
-                    elif "MNT" in col.upper() or any(num_indicator in col.upper() for num_indicator in ["MONTANT", "NOMBRE", "NUM"]):
+                            print(f"[DEBUG] Could not parse date '{val}' for column '{col}'")
+                            
+                    elif "MNT" in col.upper() or any(num_indicator in col.upper() for num_indicator in ["MONTANT", "NOMBRE", "NUM", "PRIX"]):
                         try:
-                            # Handle numeric values, preserving decimal separator
+                            # Handle French number format (comma as decimal separator)
                             if isinstance(val, str):
-                                # Replace comma with dot for conversion
-                                num_val = float(val.replace(',', '.'))
+                                # Replace comma with dot for conversion, handle thousands separator
+                                num_str = val.replace(' ', '').replace(',', '.')
+                                num_val = float(num_str)
                                 new_cell.value = num_val
                             else:
                                 new_cell.value = float(val)
                         except:
                             new_cell.value = val
+                            print(f"[DEBUG] Could not parse number '{val}' for column '{col}'")
                     else:
                         new_cell.value = val
                     
