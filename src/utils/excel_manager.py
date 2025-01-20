@@ -647,6 +647,7 @@ class ExcelManager:
                 new_row_data = pd.Series(index=self.excel_data.columns)
                 for col, val in zip(filter_columns, filter_values):
                     new_row_data[col] = val
+                self.excel_data = pd.concat([self.excel_data, pd.DataFrame([new_row_data])], ignore_index=True)
 
                 print(f"[DEBUG] Successfully added new row at index {new_row_idx - 2}")
                 
