@@ -325,68 +325,66 @@ class PDFManager:
         """Get the current rotation angle."""
         return self.current_rotation
 
-    def render_pdf_page(
-        self, pdf_path: str, page_num: int = 0, zoom: float = 1.0
-    ) -> Any:
-        """Render a PDF page as a PhotoImage."""
+    def get_pdf_page_count(self, pdf_path: str) -> int:
+        """Get the total number of pages in a PDF file.
+
+        Args:
+            pdf_path: Path to the PDF file
+
+        Returns:
+            int: Total number of pages in the PDF
+        """
         try:
-            if not is_path_available(pdf_path):
-                raise Exception("Network path is not available")
-
-            # Use cached document or open new one
-            if pdf_path != self.cached_pdf_path:
+            # Check if we need to load a new PDF
+            if self.cached_pdf_path != pdf_path:
                 self.clear_cache()
-                original_timeout = getdefaulttimeout()
-                setdefaulttimeout(self._network_timeout)
-                try:
-                    self.cached_pdf = fitz_open(pdf_path)
-                    self.cached_pdf_path = pdf_path
-                finally:
-                    setdefaulttimeout(original_timeout)
+                self.cached_pdf = fitz_open(pdf_path)
+                self.cached_pdf_path = pdf_path
 
-            # Get the specified page
-            page = self.cached_pdf[page_num]
+            return len(self.cached_pdf)
+        except Exception as e:
+            raise Exception(f"Error getting PDF page count: {str(e)}")
 
-            # Calculate matrix with optimized settings for scanned PDFs
-            base_dpi = 72  # Base DPI for PDF
-            target_dpi = 144  # Target DPI for better quality
-            dpi_scale = target_dpi / base_dpi
-            
-            # Calculate quality multiplier based on zoom level
-            # Smoothly increase quality as zoom increases
-            if zoom <= 1.0:
-                quality_multiplier = 1.0
-            else:
-                # Gradually increase quality up to 1.5x for zooms up to 2.0
-                # Beyond 2.0x zoom, maintain 1.5x quality
-                quality_multiplier = min(1.0 + (zoom - 1.0) * 0.5, 1.5)
-            
-            # Final zoom calculation incorporating DPI scaling and quality multiplier
-            effective_zoom = zoom * (dpi_scale * quality_multiplier)
+    def render_pdf_page(
+        self, pdf_path: str, zoom: float = 1.0, page: int = 1
+    ) -> Any:
+        """Render a specific page of a PDF file.
 
-            # Create matrix with optimal settings for scanned documents and rotation
-            zoom_matrix = Matrix(effective_zoom, effective_zoom)
-            if self.current_rotation:
-                zoom_matrix.prerotate(self.current_rotation)
+        Args:
+            pdf_path: Path to the PDF file
+            zoom: Zoom level for rendering
+            page: Page number to render (1-based index)
 
-            # Get page as a PNG image with optimized settings for scanned documents
-            pix = page.get_pixmap(
-                matrix=zoom_matrix,
-                alpha=False,  # No alpha channel needed for scanned docs
-                colorspace="rgb",  # Force RGB colorspace
-            )
+        Returns:
+            PIL.Image: Rendered page as a PIL Image
+        """
+        try:
+            # Check if we need to load a new PDF
+            if self.cached_pdf_path != pdf_path:
+                self.clear_cache()
+                self.cached_pdf = fitz_open(pdf_path)
+                self.cached_pdf_path = pdf_path
+
+            # Convert 1-based page index to 0-based
+            page_idx = page - 1
+            if page_idx < 0 or page_idx >= len(self.cached_pdf):
+                raise ValueError(f"Invalid page number: {page}. PDF has {len(self.cached_pdf)} pages.")
+
+            # Get the page
+            pdf_page = self.cached_pdf[page_idx]
+
+            # Calculate zoom matrix
+            zoom_matrix = Matrix(zoom, zoom)
+
+            # Get the pixmap
+            pix = pdf_page.get_pixmap(matrix=zoom_matrix)
 
             # Convert to PIL Image
-            img_data = pix.tobytes("png")
-            image = pil_open(BytesIO(img_data))
-
-            return image
+            img_data = BytesIO(pix.tobytes("png"))
+            return pil_open(img_data)
 
         except Exception as e:
-            self.clear_cache()  # Clear cache on error
-            if isinstance(e, SocketTimeout):
-                raise Exception("Network timeout while accessing PDF file")
-            raise Exception(f"Error rendering PDF: {str(e)}")
+            raise Exception(f"Error rendering PDF page: {str(e)}")
 
     def revert_pdf_location(
         self,

@@ -10,7 +10,7 @@ from tkinter.ttk import (
     Scrollbar as ttkScrollbar,
 )
 from PIL.ImageTk import PhotoImage as PILPhotoImage
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict
 from .error_dialog import ErrorDialog
 
 
@@ -20,9 +20,11 @@ class PDFViewer(ttkFrame):
     def __init__(self, master: TkWidget, pdf_manager: Any):
         super().__init__(master)
         self.pdf_manager = pdf_manager
-        self.current_image: Optional[PILPhotoImage] = None
+        self.current_images: Dict[int, PILPhotoImage] = {}  # Store images for each page
         self.current_pdf: Optional[str] = None
         self.zoom_level = 1.25
+        self.total_pages = 0
+        self.page_spacing = 20  # Spacing between pages in pixels
 
         # Configure grid weights
         self.grid_columnconfigure(0, weight=1)
@@ -86,7 +88,7 @@ class PDFViewer(ttkFrame):
 
     def _update_scrollbar_visibility(self) -> None:
         """Update scrollbar visibility based on content size."""
-        if not self.current_image:
+        if not self.current_images:
             self.h_scrollbar.grid_remove()
             self.v_scrollbar.grid_remove()
             return
@@ -181,36 +183,50 @@ class PDFViewer(ttkFrame):
     def _on_resize(self, event: TkEvent) -> None:
         """Handle window resize events."""
         if event.widget == self.canvas:
-            self._center_image()
+            self._center_images()
             self._update_scrollbar_visibility()
 
-    def _center_image(self) -> None:
-        """Center the PDF image horizontally and align to top in the canvas."""
-        if not self.current_image:
+    def _center_images(self) -> None:
+        """Center all PDF pages horizontally and stack them vertically in the canvas."""
+        if not self.current_images:
             return
 
-        # Get dimensions
+        # Get canvas dimensions
         canvas_width = self.canvas.winfo_width()
-        canvas_height = self.canvas.winfo_height()
-        image_width = self.current_image.width()
-        image_height = self.current_image.height()
+        total_height = self.page_spacing  # Initial top padding
 
-        # Calculate horizontal centering offset, vertical stays at top
-        x = max(0, (canvas_width - image_width) // 2)
-        y = 20  # Add small padding from top
+        # Calculate maximum image width
+        max_image_width = max(img.width() for img in self.current_images.values())
 
-        # Set scroll region to image bounds plus padding
-        scroll_width = max(canvas_width, image_width + x * 2)
-        scroll_height = max(canvas_height, image_height + y)
-
-        self.canvas.configure(scrollregion=(0, 0, scroll_width, scroll_height))
-
-        # Clear and redraw image
+        # Clear canvas
         self.canvas.delete("all")
-        image_x = (scroll_width - image_width) // 2
-        self.canvas.create_image(
-            image_x, y, anchor="nw", image=self.current_image
-        )
+
+        # Draw each page
+        for page_num in range(1, self.total_pages + 1):
+            if page_num in self.current_images:
+                image = self.current_images[page_num]
+                image_width = image.width()
+                image_height = image.height()
+
+                # Center image horizontally
+                x = max(0, (canvas_width - image_width) // 2)
+
+                # Create image and page number
+                self.canvas.create_image(x, total_height, anchor="nw", image=image)
+                self.canvas.create_text(
+                    canvas_width // 2,
+                    total_height - 5,
+                    text=f"Page {page_num}",
+                    fill="#666666",
+                    font=("Segoe UI", 8)
+                )
+
+                total_height += image_height + self.page_spacing
+
+        # Set scroll region to accommodate all pages
+        scroll_width = max(canvas_width, max_image_width + 40)  # Add padding
+        scroll_height = max(self.canvas.winfo_height(), total_height)
+        self.canvas.configure(scrollregion=(0, 0, scroll_width, scroll_height))
 
         # Update scrollbar visibility
         self._update_scrollbar_visibility()
@@ -218,46 +234,49 @@ class PDFViewer(ttkFrame):
     def display_pdf(
         self, pdf_path: str, zoom: float = 1.0, show_loading: bool = True
     ) -> None:
-        """Display a PDF file with the specified zoom level."""
+        """Display all pages of a PDF file with the specified zoom level."""
         try:
             self.current_pdf = pdf_path
             self.zoom_level = zoom
+            self.current_images.clear()
 
-            # Show loading message using place geometry manager
+            # Show loading message
             loading_label = None
             if show_loading:
                 loading_label = TkLabel(
                     self.loading_frame, text="Loading PDF...", font=("Segoe UI", 10)
                 )
                 loading_label.pack(pady=20)
-                self.loading_frame.lift()  # Bring loading message to front
+                self.loading_frame.lift()
                 self.update()
 
-            # Render PDF
-            image = self.pdf_manager.render_pdf_page(pdf_path, zoom=zoom)
+            # Get total pages and render each page
+            self.total_pages = self.pdf_manager.get_pdf_page_count(pdf_path)
+            for page_num in range(1, self.total_pages + 1):
+                image = self.pdf_manager.render_pdf_page(pdf_path, zoom=zoom, page=page_num)
+                self.current_images[page_num] = PILPhotoImage(image)
 
             if loading_label:
                 loading_label.destroy()
-                self.loading_frame.place_forget()  # Hide the loading frame
+                self.loading_frame.place_forget()
 
-            self.current_image = PILPhotoImage(image)
-            self._center_image()
+            self._center_images()
             self.canvas.focus_set()
 
         except Exception as e:
             if loading_label:
                 loading_label.destroy()
-                self.loading_frame.place_forget()  # Hide the loading frame in case of error
+                self.loading_frame.place_forget()
             ErrorDialog(self, "Error", f"Error displaying PDF: {str(e)}")
 
     def zoom_in(self, step: float = 0.2) -> None:
-        """Zoom in the PDF view."""
+        """Zoom in all PDF pages."""
         if self.current_pdf:
             self.zoom_level = min(3.0, self.zoom_level + step)
             self.display_pdf(self.current_pdf, self.zoom_level, show_loading=False)
 
     def zoom_out(self, step: float = 0.2) -> None:
-        """Zoom out the PDF view."""
+        """Zoom out all PDF pages."""
         if self.current_pdf:
             self.zoom_level = max(0.2, self.zoom_level - step)
             self.display_pdf(self.current_pdf, self.zoom_level, show_loading=False)
