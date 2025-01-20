@@ -17,6 +17,7 @@ from typing import Optional, List, Tuple, Union
 from time import sleep
 from random import uniform
 import pandas as pd
+import traceback
 
 
 
@@ -156,17 +157,29 @@ class ExcelManager:
             if not is_path_available(excel_file):
                 raise Exception("Network path is not available")
 
+            # Store existing cache before reload
+            existing_cache = self._hyperlink_cache.copy() if self._hyperlink_cache else {}
+            existing_cache_key = getattr(self, '_last_cached_key', None)
+            print(f"[DEBUG] Preserving existing cache - size: {len(existing_cache)}")
+
             # Load new data with timeout
             original_timeout = getdefaulttimeout()
             setdefaulttimeout(self._network_timeout)
             try:
                 print("[DEBUG] Loading fresh Excel data")
                 self.excel_data = read_excel(excel_file, sheet_name=sheet_name)
-                # Clear existing cache
-                self._hyperlink_cache = {}
-                # Clear the last cached key when loading new data
-                if hasattr(self, '_last_cached_key'):
-                    delattr(self, '_last_cached_key')
+                
+                # Restore cache if it was for the same file/sheet
+                new_cache_key = f"{excel_file}|{sheet_name}"
+                if existing_cache and existing_cache_key and existing_cache_key.startswith(new_cache_key):
+                    print("[DEBUG] Restoring preserved cache")
+                    self._hyperlink_cache = existing_cache
+                    self._last_cached_key = existing_cache_key
+                else:
+                    print("[DEBUG] Creating new cache")
+                    self._hyperlink_cache = {}
+                    if hasattr(self, '_last_cached_key'):
+                        delattr(self, '_last_cached_key')
             finally:
                 setdefaulttimeout(original_timeout)
 
@@ -175,6 +188,7 @@ class ExcelManager:
             self._cached_sheet = sheet_name
             self._last_modified = current_modified
 
+            print(f"[DEBUG] Cache state after reload - size: {len(self._hyperlink_cache)}")
             return True  # Data was reloaded
         except Exception as e:
             if isinstance(e, timeout):
@@ -184,21 +198,16 @@ class ExcelManager:
     def cache_hyperlinks_for_column(
         self, excel_file: str, sheet_name: str, column_name: str
     ) -> None:
-        """Cache hyperlink information for a specific column.
-
-        Args:
-            excel_file: Path to the Excel file
-            sheet_name: Name of the sheet
-            column_name: Name of the column to check for hyperlinks
-        """
+        """Cache hyperlink information for a specific column."""
         # Skip if Excel data isn't loaded
         if self.excel_data is None:
+            print("[DEBUG] Excel data not loaded, skipping hyperlink caching")
             return
 
         # Skip if hyperlinks are already cached for this file/sheet/column combination
         cache_key = f"{excel_file}|{sheet_name}|{column_name}"
-        if hasattr(self, '_last_cached_key') and self._last_cached_key == cache_key:
-            print(f"[DEBUG] Hyperlinks already cached for {column_name}, skipping")
+        if hasattr(self, '_last_cached_key') and self._last_cached_key == cache_key and self._hyperlink_cache:
+            print(f"[DEBUG] Hyperlinks already cached for {column_name} with {len(self._hyperlink_cache)} entries, skipping")
             return
 
         print(f"[DEBUG] Loading hyperlink information for column {column_name}")
@@ -209,28 +218,46 @@ class ExcelManager:
 
             # Find the target column
             if column_name not in df_cols.columns:
+                print(f"[DEBUG] Column {column_name} not found in Excel file")
                 wb.close()
                 return
 
             target_col = df_cols.columns.get_loc(column_name) + 1
+            print(f"[DEBUG] Target column index: {target_col}")
 
             # Clear existing cache
+            old_cache_size = len(self._hyperlink_cache)
             self._hyperlink_cache = {}
+            print(f"[DEBUG] Cleared existing cache (size was: {old_cache_size})")
 
             # Cache hyperlink information only for the target column
-            for idx in range(len(self.excel_data)):
+            total_rows = len(self.excel_data)
+            for idx in range(total_rows):
                 cell = ws.cell(
                     row=idx + 2, column=target_col
                 )  # +2 for header and 1-based indexing
-                self._hyperlink_cache[idx] = cell.hyperlink is not None
+                has_hyperlink = cell.hyperlink is not None
+                self._hyperlink_cache[idx] = has_hyperlink
+                # Only print first 10 rows and last row
+                if idx < 10 or idx == total_rows - 1:
+                    print(f"[DEBUG] Row {idx}: Hyperlink status = {has_hyperlink}")
+                elif idx == 10:
+                    print(f"[DEBUG] ... ({total_rows - 11} more rows) ...")
 
             # Store the cache key
             self._last_cached_key = cache_key
+            print(f"[DEBUG] Updated cache key to: {cache_key}")
+            print(f"[DEBUG] New cache size: {len(self._hyperlink_cache)}")
 
             wb.close()
-            print(f"[DEBUG] Hyperlink information cached for column {column_name}")
+            print(f"[DEBUG] Successfully cached hyperlink information for column {column_name}")
         except Exception as e:
             print(f"[DEBUG] Error caching hyperlink information: {str(e)}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
+            # Don't clear the cache if there was an error
+            if not self._hyperlink_cache and old_cache_size > 0:
+                print("[DEBUG] Restoring previous cache after error")
+                self._hyperlink_cache = {}
 
     @retry_with_backoff
     def update_pdf_link(
@@ -253,97 +280,89 @@ class ExcelManager:
         Returns:
             Optional[str]: The original hyperlink if it existed, else None
         """
-        if not is_path_available(excel_file):
-            raise FileNotFoundError(
-                f"Excel file not found or not accessible: {excel_file}"
-            )
-
-        if not is_path_available(pdf_path):
-            raise FileNotFoundError(f"PDF file not found or not accessible: {pdf_path}")
-
-        print(
-            f"[DEBUG] Updating Excel link in {sheet_name}, row {row_idx + 2}, column {filter2_col}"
-        )
-
-        wb = None
-        backup_created = False
-        original_hyperlink = None
-
         try:
-            # Load workbook with data_only=False to preserve all formulas in the workbook
-            wb = load_workbook(excel_file, data_only=False)
-            ws = wb[sheet_name]
+            print(f"[DEBUG] Cache state before PDF link update - size: {len(self._hyperlink_cache)}")
+            if not is_path_available(excel_file):
+                raise FileNotFoundError(f"Excel file not found or not accessible: {excel_file}")
 
-            # Identify the column index for filter2_col
-            header = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
-            if filter2_col not in header:
-                raise ValueError(
-                    f"Column '{filter2_col}' not found in sheet '{sheet_name}'"
+            if not is_path_available(pdf_path):
+                raise FileNotFoundError(f"PDF file not found or not accessible: {pdf_path}")
+
+            print(f"[DEBUG] Updating Excel link in {sheet_name}, row {row_idx + 2}, column {filter2_col}")
+
+            wb = None
+            backup_created = False
+            original_hyperlink = None
+
+            try:
+                wb = load_workbook(excel_file, data_only=False)
+                ws = wb[sheet_name]
+
+                header = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
+                if filter2_col not in header:
+                    raise ValueError(f"Column '{filter2_col}' not found in sheet '{sheet_name}'")
+                col_idx = header[filter2_col]
+
+                cell = ws.cell(row=row_idx + 2, column=col_idx)
+
+                if cell.hyperlink:
+                    original_hyperlink = cell.hyperlink.target
+                    print(f"[DEBUG] Found existing hyperlink: {original_hyperlink}")
+
+                if not backup_created:
+                    backup_file = f"{excel_file}.bak"
+                    copy2(excel_file, backup_file)
+                    backup_created = True
+                    print(f"[DEBUG] Backup created at {backup_file}")
+
+                relative_pdf_path = path.relpath(pdf_path, path.dirname(excel_file))
+                print(f"[DEBUG] Setting new hyperlink: {relative_pdf_path}")
+
+                hyperlink = Hyperlink(
+                    ref=cell.coordinate,
+                    target=relative_pdf_path,
+                    display=cell.value,
                 )
-            col_idx = header[filter2_col]
+                cell.hyperlink = hyperlink
+                cell.style = 'Hyperlink'
 
-            # Identify the cell to update
-            cell = ws.cell(row=row_idx + 2, column=col_idx)  # +2: 1 for header, 1-based
+                print("[DEBUG] Saving workbook")
+                wb.save(excel_file)
+                
+                # Update the hyperlink cache for this row
+                self._hyperlink_cache[row_idx] = True
+                print(f"[DEBUG] Updated hyperlink cache for row {row_idx} to True")
+                print(f"[DEBUG] Cache state after PDF link update - size: {len(self._hyperlink_cache)}")
 
-            # Capture the original hyperlink
-            if cell.hyperlink:
-                original_hyperlink = cell.hyperlink.target
+                print(f"[DEBUG] Excel file updated with new hyperlink at row {row_idx + 2}, column {filter2_col}")
 
-            # Create a backup copy
-            if not backup_created:
-                backup_file = f"{excel_file}.bak"
-                copy2(excel_file, backup_file)
-                backup_created = True
-                print(f"[DEBUG] Backup created at {backup_file}")
+                return original_hyperlink
 
-            # Set the new hyperlink
-            relative_pdf_path = path.relpath(pdf_path, path.dirname(excel_file))
+            except Exception as e:
+                print(f"[DEBUG] Error in update_pdf_link: {str(e)}")
+                if wb:
+                    try:
+                        print("[DEBUG] Closing workbook without saving due to error")
+                        wb.close()
+                    except:
+                        pass
 
-            # Add new hyperlink while preserving the cell value
-            print("[DEBUG] Adding new hyperlink")
+                if backup_created and path.exists(backup_file):
+                    try:
+                        print("[DEBUG] Restoring from backup")
+                        copy2(backup_file, excel_file)
+                    except:
+                        pass
+                raise Exception(f"Error updating Excel with PDF link: {str(e)}")
 
-            # Create a proper hyperlink with all required properties
-            hyperlink = Hyperlink(
-                ref=cell.coordinate,
-                target=relative_pdf_path,
-                display=cell.value,  # Keep existing cell value as display text
-            )
-            cell.hyperlink = hyperlink
-
-            # Apply Excel's built-in Hyperlink style which includes visited state handling
-            cell.style = 'Hyperlink'
-
-            # Save the workbook
-            print("[DEBUG] Saving workbook")
-            wb.save(excel_file)
-            print(
-                f"[DEBUG] Excel file updated with new hyperlink at row {row_idx + 2}, column {filter2_col}"
-            )
-
-            return original_hyperlink
+            finally:
+                if wb:
+                    wb.close()
 
         except Exception as e:
             print(f"[DEBUG] Error in update_pdf_link: {str(e)}")
-            # Restore from backup if something went wrong
-            if wb:
-                try:
-                    print("[DEBUG] Closing workbook without saving due to error")
-                    wb.close()
-                except:
-                    pass
-
-            if backup_created and path.exists(backup_file):
-                try:
-                    print("[DEBUG] Restoring from backup")
-                    copy2(backup_file, excel_file)
-                except:
-                    pass
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
             raise Exception(f"Error updating Excel with PDF link: {str(e)}")
-
-        finally:
-            # Clean up
-            if wb:
-                wb.close()
 
     @retry_with_backoff
     def revert_pdf_link(
@@ -526,18 +545,8 @@ class ExcelManager:
         filter_columns: List[str],
         filter_values: List[str],
     ) -> Tuple[Series, int]:
-        """Add a new row to the Excel file with the given filter values.
-
-        Args:
-            excel_file: Path to the Excel file
-            sheet_name: Name of the sheet to update
-            filter_columns: List of column names to set
-            filter_values: List of values to set in corresponding columns
-
-        Returns:
-            Tuple[Series, int]: The new row data and its index
-        """
         try:
+            print(f"[DEBUG] Cache state before adding new row - size: {len(self._hyperlink_cache)}")
             if len(filter_columns) != len(filter_values):
                 raise Exception(f"Number of filter columns ({len(filter_columns)}) and values ({len(filter_values)}) must match")
 
@@ -565,6 +574,7 @@ class ExcelManager:
                 # Find the last row with data
                 last_row = ws.max_row
                 new_row_idx = last_row + 1
+                print(f"[DEBUG] Adding row at index {new_row_idx - 2} (Excel row {new_row_idx})")
 
                 # First pass: Copy all formats from the template row
                 template_row = last_row
@@ -624,35 +634,40 @@ class ExcelManager:
                         new_cell.value = val
                     
                     print(f"[DEBUG] Set value '{val}' for column '{col}'")
-
-                # Save the workbook
+                    
+                # Save workbook
                 wb.save(excel_file)
+                
+                # Update cache for the new row
+                self._hyperlink_cache[new_row_idx - 2] = False
+                print(f"[DEBUG] Updated hyperlink cache for new row {new_row_idx - 2}")
+                print(f"[DEBUG] Cache state after adding row - size: {len(self._hyperlink_cache)}")
 
-                # Update the cached DataFrame to stay in sync
-                if self.excel_data is not None:
-                    new_row_data = pd.Series(index=self.excel_data.columns)
-                    for col, val in zip(filter_columns, filter_values):
-                        new_row_data[col] = val
-                    self.excel_data = pd.concat([self.excel_data, pd.DataFrame([new_row_data])], ignore_index=True)
+                # Create new row data for return
+                new_row_data = pd.Series(index=self.excel_data.columns)
+                for col, val in zip(filter_columns, filter_values):
+                    new_row_data[col] = val
 
-                # Get the new row index for return value (0-based)
-                row_idx = new_row_idx - 2  # Convert to 0-based index
-                print(f"[DEBUG] Successfully added new row at index {row_idx}")
+                print(f"[DEBUG] Successfully added new row at index {new_row_idx - 2}")
+                
+                # Remove backup after successful write
+                if path.exists(backup_file):
+                    remove(backup_file)
+                    print("[DEBUG] Removed backup file after successful write")
 
-                # Remove backup if successful
-                remove(backup_file)
-                print("[DEBUG] Removed backup file after successful write")
+                return new_row_data, new_row_idx - 2
 
-                return new_row_data, row_idx
-
-            except Exception as e:
-                print(f"[DEBUG] Error while writing new row: {str(e)}")
-                # Restore from backup
-                copy2(backup_file, excel_file)
-                remove(backup_file)
-                print("[DEBUG] Restored from backup due to error")
-                raise Exception(f"Failed to add new row: {str(e)}")
+            finally:
+                if wb:
+                    wb.close()
 
         except Exception as e:
             print(f"[DEBUG] Error in add_new_row: {str(e)}")
+            print(f"[DEBUG] Stack trace: {traceback.format_exc()}")
+            if path.exists(backup_file):
+                try:
+                    copy2(backup_file, excel_file)
+                    print("[DEBUG] Restored from backup after error")
+                except:
+                    print("[DEBUG] Failed to restore from backup")
             raise Exception(f"Error adding new row: {str(e)}")

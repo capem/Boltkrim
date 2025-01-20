@@ -1163,6 +1163,7 @@ class ProcessingTab(Frame):
 
     def process_current_file(self) -> None:
         """Process the current file."""
+        print("[DEBUG] Starting process_current_file")
         try:
             if not self.current_pdf:
                 self._update_status("No file selected")
@@ -1300,6 +1301,7 @@ class ProcessingTab(Frame):
 
     def reload_excel_data_and_update_ui(self) -> None:
         """Reload Excel data and update UI elements."""
+        print("[DEBUG] Entering reload_excel_data_and_update_ui")
         try:
             config = self.config_manager.get_config()
             if not all([
@@ -1309,18 +1311,23 @@ class ProcessingTab(Frame):
                 print("Missing configuration values")
                 return
 
+            print("[DEBUG] Cache state before Excel load - size:", len(self.excel_manager._hyperlink_cache))
             # Load Excel data only if needed
             excel_loaded = self.excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
+            print(f"[DEBUG] Excel data {'was reloaded' if excel_loaded else 'used cached version'}")
+            print("[DEBUG] Cache state after Excel load - size:", len(self.excel_manager._hyperlink_cache))
 
-            # Cache hyperlinks for filter2 column regardless of Excel reload status
+            # Cache hyperlinks for filter2 column only if Excel was reloaded or cache is empty
             if len(self.filter_frames) > 1:
                 filter2_column = config.get("filter2_column")
-                if filter2_column:
+                if filter2_column and (excel_loaded or not self.excel_manager._hyperlink_cache):
+                    print(f"[DEBUG] About to cache hyperlinks for filter2 column: {filter2_column}")
                     self.excel_manager.cache_hyperlinks_for_column(
                         config["excel_file"], 
                         config["excel_sheet"], 
                         filter2_column
                     )
+                    print("[DEBUG] Cache state after hyperlink caching - size:", len(self.excel_manager._hyperlink_cache))
 
             # Update filter labels
             for i, frame in enumerate(self.filter_frames, 1):
