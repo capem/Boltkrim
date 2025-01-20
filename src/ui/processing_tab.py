@@ -776,6 +776,7 @@ class ProcessingTab(Frame):
 
             # Get selected values up to current filter using FuzzySearchFrame's get method
             selected_values = []
+            selected_row_idx = -1  # Store the row index from filter2 if available
             for i in range(filter_index + 1):
                 fuzzy_frame = self.filter_frames[i]['fuzzy_frame']
                 value = fuzzy_frame.get().strip()
@@ -786,16 +787,20 @@ class ProcessingTab(Frame):
                     return
                 # For filter2, we need to handle the formatted value when collecting selected values
                 if i == 1:  # Second filter
-                    value, _ = self._parse_filter2_value(value)
+                    value, selected_row_idx = self._parse_filter2_value(value)
                 selected_values.append(value)
 
             # Start with the full DataFrame
             df = self.excel_manager.excel_data.copy()
 
-            # Apply filters sequentially based on selected values
-            for i, value in enumerate(selected_values):
-                column = config[f"filter{i+1}_column"]
-                df = df[df[column].astype(str).str.strip() == value]
+            # If we're past filter2 and have a valid row index, filter based on that row
+            if filter_index >= 1 and selected_row_idx >= 0:
+                df = df.iloc[[selected_row_idx]]
+            else:
+                # Apply filters sequentially based on selected values up to filter2
+                for i, value in enumerate(selected_values[:min(2, len(selected_values))]):
+                    column = config[f"filter{i+1}_column"]
+                    df = df[df[column].astype(str).str.strip() == value]
 
             # Update next filter's values if there is one
             if filter_index < len(self.filter_frames) - 1:
@@ -811,8 +816,44 @@ class ProcessingTab(Frame):
                         formatted_value = self._format_filter2_value(value, idx, has_hyperlink)
                         filter_values.append(formatted_value)
                 else:
-                    filter_values = sorted(df[next_column].astype(str).unique().tolist())
-                    filter_values = [str(x).strip() for x in filter_values]
+                    # For filters after filter2, if we have a row index, only show that row's value
+                    if selected_row_idx >= 0:
+                        # Handle date formatting for the single row
+                        value = df.iloc[0][next_column]
+                        if "DATE" in next_column.upper():
+                            if pd.notnull(value) and isinstance(value, datetime):
+                                value = value.strftime("%d/%m/%Y")
+                            elif pd.notnull(value):
+                                # Try parsing as date if it's not already a datetime
+                                for date_format in ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d"]:
+                                    try:
+                                        parsed_date = datetime.strptime(str(value).strip(), date_format)
+                                        value = parsed_date.strftime("%d/%m/%Y")
+                                        break
+                                    except ValueError:
+                                        continue
+                        filter_values = [str(value).strip()] if pd.notnull(value) else []
+                    else:
+                        # Handle date formatting for multiple values
+                        values = df[next_column].unique()
+                        filter_values = []
+                        for value in values:
+                            if "DATE" in next_column.upper():
+                                if pd.notnull(value) and isinstance(value, datetime):
+                                    formatted_value = value.strftime("%d/%m/%Y")
+                                elif pd.notnull(value):
+                                    # Try parsing as date if it's not already a datetime
+                                    try:
+                                        parsed_date = datetime.strptime(str(value).strip(), "%d/%m/%Y")
+                                        formatted_value = parsed_date.strftime("%d/%m/%Y")
+                                    except ValueError:
+                                        formatted_value = str(value).strip()
+                                else:
+                                    continue
+                            else:
+                                formatted_value = str(value).strip()
+                            filter_values.append(formatted_value)
+                        filter_values = sorted(filter_values)
 
                 # Use FuzzySearchFrame's methods to update values
                 next_filter['fuzzy_frame'].clear()
