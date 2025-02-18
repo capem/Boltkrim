@@ -344,14 +344,14 @@ class ExcelManager:
                     try:
                         print("[DEBUG] Closing workbook without saving due to error")
                         wb.close()
-                    except:
+                    except IOError:  # For workbook close operations
                         pass
 
                 if backup_created and path.exists(backup_file):
                     try:
                         print("[DEBUG] Restoring from backup")
                         copy2(backup_file, excel_file)
-                    except:
+                    except (IOError, OSError):  # For file copy operations
                         pass
                 raise Exception(f"Error updating Excel with PDF link: {str(e)}")
 
@@ -478,25 +478,65 @@ class ExcelManager:
 
                 print(f"[DEBUG] Creating mask for column '{col}' with value '{value}'")
 
-                # Convert column to string for comparison
-                df[col] = df[col].astype(str)
-                
+                # Make a copy of the column to avoid modifying the original
+                col_series = df[col].copy()
+
                 # Handle date columns
                 if "DATE" in col.upper():
                     try:
-                        # Try to parse the date value
-                        date_value = pd.to_datetime(value)
-                        print(f"[DEBUG] Parsed date value: {date_value}")
+                        # Try to parse the date value with dayfirst=True for dd/mm/yyyy format
+                        print(f"[DEBUG] Attempting to parse date value '{value}' for column '{col}'")
+                        # First try explicit French format
+                        try:
+                            date_value = pd.to_datetime(value, format='%d/%m/%Y')
+                        except ValueError:  # For date parsing errors
+                            # Fallback to general parsing with dayfirst=True
+                            date_value = pd.to_datetime(value, dayfirst=True)
+                        
+                        print(f"[DEBUG] Successfully parsed input date: {date_value}")
+                        
                         # Convert column to datetime if not already
-                        if not is_datetime64_any_dtype(df[col]):
-                            df[col] = pd.to_datetime(df[col], errors='coerce')
-                        return df[col] == date_value
-                    except:
-                        # If date parsing fails, fall back to string comparison
-                        print(f"[DEBUG] Date parsing failed, using string comparison for '{col}'")
-                        return df[col].str.strip() == str(value).strip()
+                        if not is_datetime64_any_dtype(col_series):
+                            # Try to parse column values with French format first
+                            try:
+                                col_series = pd.to_datetime(col_series, format='%d/%m/%Y', errors='coerce')
+                            except ValueError:  # For date parsing errors
+                                col_series = pd.to_datetime(col_series, dayfirst=True, errors='coerce')
+                            
+                        print(f"[DEBUG] Column conversion complete. Sample values: {col_series.head()}")
+                        return col_series.dt.normalize() == date_value.normalize()
+                        
+                    except Exception as e:
+                        print(f"[DEBUG] Date parsing failed for column '{col}': {str(e)}")
+                        print("[DEBUG] Falling back to string comparison")
+                        return col_series.astype(str).str.strip() == str(value).strip()
+                
+                # Handle numeric columns (for amount comparisons)
+                elif "MNT" in col.upper() or any(num_indicator in col.upper() for num_indicator in ["MONTANT", "NOMBRE", "NUM", "PRIX"]):
+                    try:
+                        # Clean and convert the input value
+                        num_str = str(value).replace(' ', '').replace(',', '.')
+                        target_value = float(num_str)
+                        
+                        # Convert column values with the same cleaning
+                        def clean_number(x):
+                            try:
+                                if pd.isna(x):
+                                    return None
+                                return float(str(x).replace(' ', '').replace(',', '.'))
+                            except (ValueError, TypeError):  # For number conversion errors
+                                return None
+                        
+                        col_series = col_series.apply(clean_number)
+                        return col_series == target_value
+                        
+                    except Exception as e:
+                        print(f"[DEBUG] Number parsing failed for column '{col}': {str(e)}")
+                        return col_series.astype(str).str.strip() == str(value).strip()
+                
+                # Default string comparison
                 else:
-                    return df[col].str.strip() == str(value).strip()
+                    return col_series.astype(str).str.strip() == str(value).strip()
 
             # Create mask for each filter
             masks = [create_mask(col, val) for col, val in zip(filter_columns, filter_values)]
@@ -603,7 +643,7 @@ class ExcelManager:
                                 try:
                                     date_val = pd.to_datetime(val, format=fmt)
                                     break
-                                except:
+                                except ValueError:  # For date parsing errors
                                     continue
                                     
                             if date_val is None:
@@ -613,7 +653,7 @@ class ExcelManager:
                             new_cell.value = date_val.to_pydatetime()
                             # Set French date format
                             new_cell.number_format = 'DD/MM/YYYY'
-                        except:
+                        except (ValueError, TypeError):  # For date parsing errors
                             new_cell.value = val
                             print(f"[DEBUG] Could not parse date '{val}' for column '{col}'")
                             
@@ -627,7 +667,7 @@ class ExcelManager:
                                 new_cell.value = num_val
                             else:
                                 new_cell.value = float(val)
-                        except:
+                        except (ValueError, TypeError):  # For number conversion errors
                             new_cell.value = val
                             print(f"[DEBUG] Could not parse number '{val}' for column '{col}'")
                     else:
@@ -644,10 +684,10 @@ class ExcelManager:
                 print(f"[DEBUG] Cache state after adding row - size: {len(self._hyperlink_cache)}")
 
                 # Create new row data for return
-                new_row_data = pd.Series(index=self.excel_data.columns)
+                new_row_data = pd.Series(index=self.excel_data.columns, dtype='object')
                 for col, val in zip(filter_columns, filter_values):
                     new_row_data[col] = val
-                self.excel_data = pd.concat([self.excel_data, pd.DataFrame([new_row_data])], ignore_index=True)
+                self.excel_data = pd.concat([self.excel_data, pd.DataFrame([new_row_data]).dropna(how='all', axis=1)], ignore_index=True)
 
                 print(f"[DEBUG] Successfully added new row at index {new_row_idx - 2}")
                 
@@ -669,6 +709,6 @@ class ExcelManager:
                 try:
                     copy2(backup_file, excel_file)
                     print("[DEBUG] Restored from backup after error")
-                except:
+                except (IOError, OSError):  # For file copy operations
                     print("[DEBUG] Failed to restore from backup")
             raise Exception(f"Error adding new row: {str(e)}")
