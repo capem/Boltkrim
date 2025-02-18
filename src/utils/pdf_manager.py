@@ -3,7 +3,7 @@ from os import listdir as os_listdir
 from shutil import copy2
 from tempfile import TemporaryDirectory
 from io import BytesIO
-from time import sleep, time
+from time import sleep
 import re
 from socket import timeout as SocketTimeout, getdefaulttimeout, setdefaulttimeout
 from fitz import open as fitz_open, Matrix
@@ -373,8 +373,18 @@ class PDFManager:
             # Get the page
             pdf_page = self.cached_pdf[page_idx]
 
-            # Calculate zoom matrix
-            zoom_matrix = Matrix(zoom, zoom)
+            # Calculate zoom matrix and apply rotation for first page if needed
+            if page_idx == 0 and self.current_rotation != 0:
+                # For rotation: Matrix(cos(angle), -sin(angle), sin(angle), cos(angle), 0, 0)
+                rad = self.current_rotation * 3.14159265359 / 180  # convert degrees to radians
+                from math import sin, cos
+                zoom_matrix = Matrix(
+                    cos(rad) * zoom, -sin(rad) * zoom,  # a, b
+                    sin(rad) * zoom, cos(rad) * zoom,   # c, d
+                    0, 0                                # e, f
+                )
+            else:
+                zoom_matrix = Matrix(zoom, zoom)
 
             # Get the pixmap
             pix = pdf_page.get_pixmap(matrix=zoom_matrix)

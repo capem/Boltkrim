@@ -1,5 +1,5 @@
 from os import path, remove
-from pandas import read_excel, ExcelFile, DataFrame, Series, to_datetime
+from pandas import read_excel, ExcelFile, DataFrame, Series
 from pandas.api.types import is_datetime64_any_dtype
 from openpyxl import load_workbook
 from openpyxl.worksheet.hyperlink import Hyperlink
@@ -13,7 +13,7 @@ from socket import (
     setdefaulttimeout,
     timeout,
 )
-from typing import Optional, List, Tuple, Union
+from typing import Optional, List, Tuple
 from time import sleep
 from random import uniform
 import pandas as pd
@@ -413,7 +413,7 @@ class ExcelManager:
             
             # Save the workbook
             wb.save(excel_file)
-            print(f"[DEBUG] Successfully reverted Excel cell")
+            print("[DEBUG] Successfully reverted Excel cell")
             
         except Exception as e:
             print(f"[DEBUG] Error reverting Excel cell: {str(e)}")

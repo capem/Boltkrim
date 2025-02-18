@@ -1,6 +1,5 @@
 from __future__ import annotations
 from tkinter import (
-    END as TkEND,
     Event as TkEvent,
     Widget as TkWidget,
     filedialog,
@@ -15,7 +14,7 @@ from tkinter.ttk import (
 
 from os import path, makedirs, remove
 from shutil import copy2
-from typing import Optional, Any, Dict, List, Callable
+from typing import Optional, Dict, List, Callable
 from threading import Thread, Lock, Event
 from .fuzzy_search import FuzzySearchFrame
 from .error_dialog import ErrorDialog
@@ -949,7 +948,7 @@ class ProcessingTab(Frame):
                 try:
                     copy2(pdf_path, dest_path)
                     remove(pdf_path)
-                    self._update_status(f"File skipped and moved to archive")
+                    self._update_status("File skipped and moved to archive")
                     break
                 except PermissionError:
                     retry_count += 1
@@ -1053,7 +1052,7 @@ class ProcessingTab(Frame):
                 self.confirm_button.state(["disabled"])
 
         except Exception as e:
-            print(f"[DEBUG] Error in load_next_pdf:")
+            print("[DEBUG] Error in load_next_pdf:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading next PDF: {str(e)}")
 
@@ -1125,7 +1124,7 @@ class ProcessingTab(Frame):
                 self._update_status("New file loaded")
 
         except Exception as e:
-            print(f"[DEBUG] Error in _on_file_info_click:")
+            print("[DEBUG] Error in _on_file_info_click:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading PDF: {str(e)}")
 
@@ -1331,8 +1330,9 @@ class ProcessingTab(Frame):
         try:
             if hasattr(self, "pdf_queue"):
                 self.pdf_queue.stop()
-        except:
-            pass
+        except (RuntimeError, AttributeError) as e:
+            # Log but don't raise errors during cleanup since object is being destroyed
+            print(f"[DEBUG] Error during ProcessingTab cleanup: {str(e)}")
 
     def handle_config_change(self) -> None:
         """Handle configuration changes by reloading the current PDF if one is loaded."""
@@ -1398,7 +1398,7 @@ class ProcessingTab(Frame):
                     frame['fuzzy_frame'].set_values([])
 
         except Exception as e:
-            print(f"[DEBUG] Error in reload_excel_data_and_update_ui:")
+            print("[DEBUG] Error in reload_excel_data_and_update_ui:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}")
 

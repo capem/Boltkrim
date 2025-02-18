@@ -19,7 +19,6 @@ from tkinter.ttk import (
     Style,
     LabelFrame,
 )
-from typing import Optional, Callable
 from ..utils import ConfigManager, ExcelManager  # Updated import
 from .fuzzy_search import FuzzySearchFrame
 from .error_dialog import ErrorDialog
@@ -599,7 +598,7 @@ class ConfigTab(Frame):
         """Update the list of available presets in the combobox."""
         presets = self.config_manager.get_preset_names()
         self.preset_combobox["values"] = presets
-        if not self.preset_var.get() in presets:
+        if self.preset_var.get() not in presets:
             self.preset_var.set("")
 
     def _on_frame_configure(self, event=None):

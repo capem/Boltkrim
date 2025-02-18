@@ -1,8 +1,7 @@
 from __future__ import annotations
 from tkinter import Tk, SUNKEN, X, BOTTOM, LEFT, W
-from tkinter.ttk import Notebook, Frame, Label, Button
+from tkinter.ttk import Notebook, Frame, Label
 from tkinter.messagebox import showerror
-from typing import Optional
 from src.ui import ConfigTab, ProcessingTab
 from src.utils import ConfigManager, ExcelManager, PDFManager
 

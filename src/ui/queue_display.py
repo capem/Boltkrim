@@ -1,6 +1,5 @@
 from __future__ import annotations
 from tkinter import (
-    END as TkEND,
     Event as TkEvent,
     Widget as TkWidget,
     messagebox as TkMessagebox,
@@ -12,11 +11,10 @@ from tkinter.ttk import (
     Scrollbar as ttkScrollbar,
     Label as ttkLabel,
     Style as ttkStyle,
-    LabelFrame as ttkLabelFrame,
     Treeview as ttkTreeview,
 )
 
-from typing import Dict, List
+from typing import Dict
 from datetime import datetime
 from os import path
 from ..utils import PDFTask
@@ -301,21 +299,6 @@ class QueueDisplay(ttkFrame):
                 original_hyperlink=task.original_excel_hyperlink,
                 original_value=task.value2,
             )
-
-            # Convert date string to datetime object
-            try:
-                date_value = datetime.strptime(task.value3, "%Y-%m-%d")
-            except ValueError:
-                # Try alternative date formats
-                date_formats = ["%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"]
-                for date_format in date_formats:
-                    try:
-                        date_value = datetime.strptime(task.value3, date_format)
-                        break
-                    except ValueError:
-                        continue
-                else:
-                    raise ValueError(f"Could not parse date: {task.value3}")
 
             # Revert PDF location
             processing_tab.pdf_manager.revert_pdf_location(task=task)

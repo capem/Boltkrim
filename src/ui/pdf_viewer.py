@@ -10,7 +10,7 @@ from tkinter.ttk import (
     Scrollbar as ttkScrollbar,
 )
 from PIL.ImageTk import PhotoImage as PILPhotoImage
-from typing import Optional, Any, List, Dict
+from typing import Optional, Any, Dict
 from .error_dialog import ErrorDialog
 
 
