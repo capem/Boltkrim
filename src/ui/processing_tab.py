@@ -50,6 +50,38 @@ class ProcessingQueue:
         self.pdf_manager = pdf_manager
         self._callbacks: List[Callable] = []
 
+    def _parse_filter2_value(self, formatted_value: str) -> tuple[str, int]:
+        """Parse filter2 value to get original value and row number.
+
+        This implementation is used by the UI components to extract Excel row numbers
+        from formatted filter values.
+
+        Args:
+            formatted_value: String in format "✓ value ⟨Excel Row: N⟩"
+
+        Returns:
+            tuple[str, int]: (original value without formatting, 0-based row index)
+        """
+        import re
+
+        if not formatted_value:
+            print("[DEBUG] UI received empty filter2 value")
+            return "", -1
+
+        # Remove checkmark if present
+        formatted_value = formatted_value.replace("✓ ", "", 1)
+
+        match = re.match(r"(.*?)\s*⟨Excel Row:\s*(\d+)⟩", formatted_value)
+        if match:
+            value = match.group(1).strip()
+            row_num = int(match.group(2))
+            print(
+                f"[DEBUG] UI parsed filter2 value: '{formatted_value}' -> value='{value}', row={row_num - 2}"
+            )
+            return value, row_num - 2  # Convert back to 0-based index
+        print(f"[DEBUG] UI failed to parse filter2 value: '{formatted_value}'")
+        return formatted_value, -1
+
     def mark_changed(self) -> None:
         """Mark that the queue has changes that need to be displayed."""
         with self.lock:
@@ -102,7 +134,9 @@ class ProcessingQueue:
     def clear_completed(self) -> None:
         """Clear completed tasks from the queue."""
         with self.lock:
-            self.tasks = {k: v for k, v in self.tasks.items() if v.status != "completed"}
+            self.tasks = {
+                k: v for k, v in self.tasks.items() if v.status != "completed"
+            }
         self.mark_changed()
 
     def retry_failed(self) -> None:
@@ -167,53 +201,102 @@ class ProcessingQueue:
 
             try:
                 config = self.config_manager.get_config()
-                # Use the existing excel_manager instance instead of creating a new one
                 excel_manager = self.excel_manager
 
-                # Load Excel data and find matching row - ExcelManager handles its own errors
-                excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
-                
+                # Load Excel data
+                excel_manager.load_excel_data(
+                    config["excel_file"], config["excel_sheet"]
+                )
+
                 # Get filter columns dynamically based on the number of filter values
                 filter_columns = []
                 for i in range(1, len(task_to_process.filter_values) + 1):
                     column_key = f"filter{i}_column"
                     if column_key not in config:
-                        raise Exception(f"Missing filter column configuration for filter {i}")
+                        raise Exception(
+                            f"Missing filter column configuration for filter {i}"
+                        )
                     filter_columns.append(config[column_key])
 
-                # Find matching row with dynamic filter columns
-                row_data, row_idx = excel_manager.find_matching_row(
-                    filter_columns=filter_columns,
-                    filter_values=task_to_process.filter_values
-                )
-
-                # If no matching row found, create a new one
-                if row_data is None:
-                    try:
-                        row_data, row_idx = excel_manager.add_new_row(
-                            config["excel_file"],
-                            config["excel_sheet"],
-                            filter_columns=filter_columns,
-                            filter_values=task_to_process.filter_values
+                # Get the row index from the second filter value if available
+                if len(task_to_process.filter_values) > 1:
+                    filter_value, extracted_row_idx = self._parse_filter2_value(
+                        task_to_process.filter_values[1]
+                    )
+                    if extracted_row_idx >= 0:
+                        print(
+                            f"[DEBUG] Using row index {extracted_row_idx} from filter2 value"
                         )
-                        # Update task with new row index
-                        task_to_process.row_idx = row_idx
-                        print(f"[DEBUG] Added new row with index: {row_idx}")
+                        row_idx = extracted_row_idx
+                        # Replace the formatted filter2 value with the actual value
+                        task_to_process.filter_values[1] = filter_value
+                        # Get the row data directly using the index
+                        # Verify the row index is within valid range
+                        if 0 <= row_idx < len(excel_manager.excel_data):
+                            row_data = excel_manager.excel_data.iloc[row_idx]
 
-                        # Reload Excel data after adding new row
-                        # Give the file system time to finish writing
-                        time.sleep(0.5)
-                        excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
+                            # Verify the data matches our filter values
+                            mismatched_filters = []
+                            for i, (col, val) in enumerate(
+                                zip(filter_columns, task_to_process.filter_values)
+                            ):
+                                if i != 1:  # Skip filter2 since we already processed it
+                                    # Handle date formatting for comparison
+                                    row_value = row_data[col]
+                                    if "DATE" in col.upper() and pd.notnull(row_value):
+                                        if isinstance(row_value, datetime):
+                                            row_value = row_value.strftime("%d/%m/%Y")
+                                        else:
+                                            # Try parsing as date if it's not already a datetime
+                                            try:
+                                                parsed_date = datetime.strptime(str(row_value).strip(), "%Y-%m-%d %H:%M:%S")
+                                                row_value = parsed_date.strftime("%d/%m/%Y")
+                                            except ValueError:
+                                                row_value = str(row_value).strip()
+                                    else:
+                                        row_value = str(row_value).strip()
 
-                    except Exception as e:
+                                    if row_value != str(val).strip():
+                                        mismatched_filters.append(
+                                            f"{col}: expected '{val}', got '{row_value}'"
+                                        )
+
+                            if mismatched_filters:
+                                print(
+                                    f"[DEBUG] Row {row_idx} data doesn't match filter values"
+                                )
+                                print(f"[DEBUG] Mismatches: {mismatched_filters}")
+                                task_to_process.status = "failed"
+                                task_to_process.error_msg = f"Selected row data doesn't match filter values: {', '.join(mismatched_filters)}"
+                                self.mark_changed()
+                                continue
+
+                        else:
+                            print(
+                                f"[DEBUG] Row index {row_idx} is out of range (max: {len(excel_manager.excel_data) - 1})"
+                            )
+                            task_to_process.status = "failed"
+                            task_to_process.error_msg = f"Invalid Excel row number {row_idx + 2} (exceeds file length)"
+                            self.mark_changed()
+                            continue
+                    else:
+                        print("[DEBUG] Invalid row index extracted from filter2 value")
                         task_to_process.status = "failed"
-                        task_to_process.error_msg = f"Failed to create new row: {str(e)}"
+                        task_to_process.error_msg = "Could not extract valid Excel row number from filter2 value"
                         self.mark_changed()
                         continue
                 else:
-                    # Update task with found row index
-                    task_to_process.row_idx = row_idx
-                    print(f"[DEBUG] Using existing row with index: {row_idx}")
+                    print("[DEBUG] No filter2 value available")
+                    task_to_process.status = "failed"
+                    task_to_process.error_msg = "Missing filter2 value with row number"
+                    self.mark_changed()
+                    continue
+
+                # Update task with the row index
+                task_to_process.row_idx = row_idx
+                print(
+                    f"[DEBUG] Using row index: {row_idx} with filter columns: {filter_columns}"
+                )
 
                 # Define date formats as a constant
                 DATE_FORMATS = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d"]
@@ -222,7 +305,9 @@ class ProcessingQueue:
                 template_data = {}
 
                 # Add filter values to template data
-                for i, (column, value) in enumerate(zip(filter_columns, task_to_process.filter_values), 1):
+                for i, (column, value) in enumerate(
+                    zip(filter_columns, task_to_process.filter_values), 1
+                ):
                     template_data[f"filter{i}"] = value
                     template_data[column] = value
 
@@ -241,7 +326,9 @@ class ProcessingQueue:
                             parsed_date = None
                             for date_format in DATE_FORMATS:
                                 try:
-                                    parsed_date = datetime.strptime(str(value).strip(), date_format)
+                                    parsed_date = datetime.strptime(
+                                        str(value).strip(), date_format
+                                    )
                                     break
                                 except ValueError:
                                     continue
@@ -262,7 +349,9 @@ class ProcessingQueue:
 
                 # Add processed_folder to template data and process PDF
                 template_data["processed_folder"] = config["processed_folder"]
-                processed_path = self.pdf_manager.generate_output_path(config["output_template"], template_data)
+                processed_path = self.pdf_manager.generate_output_path(
+                    config["output_template"], template_data
+                )
 
                 # Capture the original hyperlink before updating
                 original_hyperlink = self.excel_manager.update_pdf_link(
@@ -305,10 +394,14 @@ class ProcessingQueue:
                 with self.lock:
                     if task_to_process and task_to_process.status == "processing":
                         task_to_process.status = "failed"
-                        task_to_process.error_msg = "Task timed out or failed unexpectedly"
+                        task_to_process.error_msg = (
+                            "Task timed out or failed unexpectedly"
+                        )
                         self.has_changes = True  # Set flag when status changes
                         self._notify_status_change()
-                        print("[DEBUG] Task marked as failed due to timeout or unexpected state")
+                        print(
+                            "[DEBUG] Task marked as failed due to timeout or unexpected state"
+                        )
 
     def add_skipped_task(self, task: PDFTask) -> None:
         """Add a skipped task to the queue without triggering processing."""
@@ -368,10 +461,10 @@ class ProcessingTab(Frame):
     def on_config_change(self) -> None:
         """Handle configuration changes."""
         self._update_status("Loading...")
-        
+
         # Clear existing filters
         for frame in self.filter_frames:
-            frame['frame'].destroy()
+            frame["frame"].destroy()
         self.filter_frames.clear()
 
         # Load new filters from config
@@ -422,7 +515,9 @@ class ProcessingTab(Frame):
         )
 
         # Configure frame styles
-        style.configure("Card.TFrame", background="#ffffff", relief="solid", borderwidth=1)
+        style.configure(
+            "Card.TFrame", background="#ffffff", relief="solid", borderwidth=1
+        )
 
         # Configure Treeview
         style.configure("Treeview", font=("Segoe UI", 10), rowheight=25)
@@ -472,8 +567,12 @@ class ProcessingTab(Frame):
         self.handle_button.place(relx=0.5, rely=0.5, anchor="center", relheight=0.1)
 
         # Make handle frame draggable for resizing
-        self.handle_frame.bind("<Enter>", lambda e: self.handle_frame.configure(cursor="sb_h_double_arrow"))
-        self.handle_frame.bind("<Leave>", lambda e: self.handle_frame.configure(cursor=""))
+        self.handle_frame.bind(
+            "<Enter>", lambda e: self.handle_frame.configure(cursor="sb_h_double_arrow")
+        )
+        self.handle_frame.bind(
+            "<Leave>", lambda e: self.handle_frame.configure(cursor="")
+        )
         self.handle_frame.bind("<Button-1>", self._start_resize)
         self.handle_frame.bind("<B1-Motion>", self._do_resize)
         self.handle_frame.bind("<ButtonRelease-1>", self._end_resize)
@@ -509,10 +608,16 @@ class ProcessingTab(Frame):
 
     def _do_resize(self, event: TkEvent) -> None:
         """Resize the left panel based on mouse drag."""
-        if not hasattr(self, "resizing") or not self.resizing or not self.left_panel_visible:
+        if (
+            not hasattr(self, "resizing")
+            or not self.resizing
+            or not self.left_panel_visible
+        ):
             return
         delta_x = event.x_root - self.start_x
-        new_width = max(200, min(800, self.start_width + delta_x))  # Limit width between 200 and 400
+        new_width = max(
+            200, min(800, self.start_width + delta_x)
+        )  # Limit width between 200 and 400
 
         # Only update if width actually changed
         if new_width != self.left_panel_width:
@@ -558,7 +663,9 @@ class ProcessingTab(Frame):
             if current_width < min_width:
                 # Instead of changing window geometry, adjust panel sizes
                 if self.left_panel_visible:
-                    self.left_panel_width = max(200, self.left_panel_width - (min_width - current_width))
+                    self.left_panel_width = max(
+                        200, self.left_panel_width - (min_width - current_width)
+                    )
                     self.left_panel.configure(width=self.left_panel_width)
 
             # Update layout
@@ -627,19 +734,27 @@ class ProcessingTab(Frame):
         zoom_frame = Frame(controls_frame)
         zoom_frame.pack(side="left")
 
-        Button(zoom_frame, text="−", width=3, command=self.pdf_viewer.zoom_out).pack(side="left", padx=2)
+        Button(zoom_frame, text="−", width=3, command=self.pdf_viewer.zoom_out).pack(
+            side="left", padx=2
+        )
         self.zoom_label = Label(zoom_frame, text="100%", width=6)
         self.zoom_label.pack(side="left", padx=5)
-        Button(zoom_frame, text="+", width=3, command=self.pdf_viewer.zoom_in).pack(side="left", padx=2)
+        Button(zoom_frame, text="+", width=3, command=self.pdf_viewer.zoom_in).pack(
+            side="left", padx=2
+        )
 
         # Rotation Controls
         rotation_frame = Frame(controls_frame)
         rotation_frame.pack(side="right")
 
-        Button(rotation_frame, text="↶", width=3, command=self.rotate_counterclockwise).pack(side="left", padx=2)
+        Button(
+            rotation_frame, text="↶", width=3, command=self.rotate_counterclockwise
+        ).pack(side="left", padx=2)
         self.rotation_label = Label(rotation_frame, text="0°", width=6)
         self.rotation_label.pack(side="left", padx=5)
-        Button(rotation_frame, text="↷", width=3, command=self.rotate_clockwise).pack(side="left", padx=2)
+        Button(rotation_frame, text="↷", width=3, command=self.rotate_clockwise).pack(
+            side="left", padx=2
+        )
 
         return panel
 
@@ -664,12 +779,12 @@ class ProcessingTab(Frame):
             style="Success.TButton",
         )
         self.confirm_button.pack(fill="x", pady=(0, 5))
-        
+
         # Add key bindings for button activation when focused
         def trigger_if_focused(event):
             if event.widget.focus_get() == event.widget:
                 self.process_current_file()
-                
+
         self.confirm_button.bind("<Return>", trigger_if_focused)
 
         self.skip_button = Button(
@@ -723,18 +838,22 @@ class ProcessingTab(Frame):
             filter_frame,
             width=30,
             identifier=f"processing_{identifier}",
-            on_tab=lambda e: self._handle_filter_tab(e, current_index)  # Use the pre-calculated index
+            on_tab=lambda e: self._handle_filter_tab(
+                e, current_index
+            ),  # Use the pre-calculated index
         )
         fuzzy_frame.pack(fill="x")
 
         # Store filter info
-        self.filter_frames.append({
-            'frame': filter_frame,
-            'label': label,
-            'fuzzy_frame': fuzzy_frame,
-            'identifier': identifier,
-            'values': []  # Store available values for this filter
-        })
+        self.filter_frames.append(
+            {
+                "frame": filter_frame,
+                "label": label,
+                "fuzzy_frame": fuzzy_frame,
+                "identifier": identifier,
+                "values": [],  # Store available values for this filter
+            }
+        )
 
         # Initialize with available values if this is the first filter
         if current_index == 0:  # Use current_index instead of len(self.filter_frames)
@@ -742,8 +861,10 @@ class ProcessingTab(Frame):
                 config = self.config_manager.get_config()
                 if config["excel_file"] and config["excel_sheet"]:
                     if self.excel_manager.excel_data is None:
-                        self.excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
-                    
+                        self.excel_manager.load_excel_data(
+                            config["excel_file"], config["excel_sheet"]
+                        )
+
                     if column_name:
                         df = self.excel_manager.excel_data
                         values = sorted(df[column_name].astype(str).unique().tolist())
@@ -753,17 +874,19 @@ class ProcessingTab(Frame):
                 print(f"[DEBUG] Error initializing first filter values: {str(e)}")
 
         # Bind events
-        fuzzy_frame.bind("<<ValueSelected>>", lambda e: self._on_filter_select(current_index))  # Use current_index
+        fuzzy_frame.bind(
+            "<<ValueSelected>>", lambda e: self._on_filter_select(current_index)
+        )  # Use current_index
         fuzzy_frame.entry.bind("<KeyRelease>", lambda e: self.update_confirm_button())
 
     def _handle_filter_tab(self, event: Event, filter_index: int) -> str:
         """Handle tab key in filter to move focus to next filter or confirm button."""
         # Move focus to next filter or confirm button
         if filter_index < len(self.filter_frames) - 1:
-            self.filter_frames[filter_index + 1]['fuzzy_frame'].entry.focus_set()
+            self.filter_frames[filter_index + 1]["fuzzy_frame"].entry.focus_set()
         else:
             self.confirm_button.focus_set()
-        
+
         return "break"
 
     def _on_filter_select(self, filter_index: int) -> None:
@@ -777,17 +900,20 @@ class ProcessingTab(Frame):
             selected_values = []
             selected_row_idx = -1  # Store the row index from filter2 if available
             for i in range(filter_index + 1):
-                fuzzy_frame = self.filter_frames[i]['fuzzy_frame']
+                fuzzy_frame = self.filter_frames[i]["fuzzy_frame"]
                 value = fuzzy_frame.get().strip()
                 if not value:  # If any previous filter is empty, stop processing
                     # Clear all subsequent filters using FuzzySearchFrame's clear method
                     for j in range(i + 1, len(self.filter_frames)):
-                        self.filter_frames[j]['fuzzy_frame'].clear()
+                        self.filter_frames[j]["fuzzy_frame"].clear()
                     return
-                # For filter2, we need to handle the formatted value when collecting selected values
+                # For filter2, we need to parse it only if we haven't already gotten a row index
                 if i == 1:  # Second filter
-                    value, selected_row_idx = self._parse_filter2_value(value)
-                selected_values.append(value)
+                    if selected_row_idx < 0:  # Only parse if we don't have a valid row index
+                        _, parsed_row_idx = self.pdf_queue._parse_filter2_value(value)
+                        if parsed_row_idx >= 0:
+                            selected_row_idx = parsed_row_idx
+                selected_values.append(value)  # Keep the formatted value
 
             # Start with the full DataFrame
             df = self.excel_manager.excel_data.copy()
@@ -797,22 +923,26 @@ class ProcessingTab(Frame):
                 df = df.iloc[[selected_row_idx]]
             else:
                 # Apply filters sequentially based on selected values up to filter2
-                for i, value in enumerate(selected_values[:min(2, len(selected_values))]):
-                    column = config[f"filter{i+1}_column"]
+                for i, value in enumerate(
+                    selected_values[: min(2, len(selected_values))]
+                ):
+                    column = config[f"filter{i + 1}_column"]
                     df = df[df[column].astype(str).str.strip() == value]
 
             # Update next filter's values if there is one
             if filter_index < len(self.filter_frames) - 1:
                 next_filter = self.filter_frames[filter_index + 1]
-                next_column = config[f"filter{filter_index+2}_column"]
-                
+                next_column = config[f"filter{filter_index + 2}_column"]
+
                 # Special handling for filter2 (index 1) to include row information
                 if filter_index == 0:  # This means we're updating filter2
                     filter_values = []
                     for idx, row in df.iterrows():
                         value = str(row[next_column]).strip()
                         has_hyperlink = self.excel_manager.has_hyperlink(idx)
-                        formatted_value = self._format_filter2_value(value, idx, has_hyperlink)
+                        formatted_value = self._format_filter2_value(
+                            value, idx, has_hyperlink
+                        )
                         filter_values.append(formatted_value)
                 else:
                     # For filters after filter2, if we have a row index, only show that row's value
@@ -824,14 +954,23 @@ class ProcessingTab(Frame):
                                 value = value.strftime("%d/%m/%Y")
                             elif pd.notnull(value):
                                 # Try parsing as date if it's not already a datetime
-                                for date_format in ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d"]:
+                                for date_format in [
+                                    "%d/%m/%Y",
+                                    "%d-%m-%Y",
+                                    "%Y-%m-%d",
+                                    "%Y/%m/%d",
+                                ]:
                                     try:
-                                        parsed_date = datetime.strptime(str(value).strip(), date_format)
+                                        parsed_date = datetime.strptime(
+                                            str(value).strip(), date_format
+                                        )
                                         value = parsed_date.strftime("%d/%m/%Y")
                                         break
                                     except ValueError:
                                         continue
-                        filter_values = [str(value).strip()] if pd.notnull(value) else []
+                        filter_values = (
+                            [str(value).strip()] if pd.notnull(value) else []
+                        )
                     else:
                         # Handle date formatting for multiple values
                         values = df[next_column].unique()
@@ -843,8 +982,12 @@ class ProcessingTab(Frame):
                                 elif pd.notnull(value):
                                     # Try parsing as date if it's not already a datetime
                                     try:
-                                        parsed_date = datetime.strptime(str(value).strip(), "%d/%m/%Y")
-                                        formatted_value = parsed_date.strftime("%d/%m/%Y")
+                                        parsed_date = datetime.strptime(
+                                            str(value).strip(), "%d/%m/%Y"
+                                        )
+                                        formatted_value = parsed_date.strftime(
+                                            "%d/%m/%Y"
+                                        )
                                     except ValueError:
                                         formatted_value = str(value).strip()
                                 else:
@@ -855,24 +998,28 @@ class ProcessingTab(Frame):
                         filter_values = sorted(filter_values)
 
                 # Use FuzzySearchFrame's methods to update values
-                next_filter['fuzzy_frame'].clear()
-                next_filter['fuzzy_frame'].set_values(filter_values)
+                next_filter["fuzzy_frame"].clear()
+                next_filter["fuzzy_frame"].set_values(filter_values)
 
                 # Clear all subsequent filters using FuzzySearchFrame's methods
                 for i in range(filter_index + 2, len(self.filter_frames)):
-                    self.filter_frames[i]['fuzzy_frame'].clear()
+                    self.filter_frames[i]["fuzzy_frame"].clear()
 
                 # Special handling for when filter2 is being updated directly
-                if filter_index == 1:  # If we're in filter2, reformat its values with checkmarks
+                if (
+                    filter_index == 1
+                ):  # If we're in filter2, reformat its values with checkmarks
                     current_filter = self.filter_frames[1]  # Get filter2
                     current_values = []
                     for idx, row in df.iterrows():
-                        value = str(row[config['filter2_column']]).strip()
+                        value = str(row[config["filter2_column"]]).strip()
                         has_hyperlink = self.excel_manager.has_hyperlink(idx)
-                        formatted_value = self._format_filter2_value(value, idx, has_hyperlink)
+                        formatted_value = self._format_filter2_value(
+                            value, idx, has_hyperlink
+                        )
                         current_values.append(formatted_value)
                     if current_values:  # Only update if we have values
-                        current_filter['fuzzy_frame'].set_values(current_values)
+                        current_filter["fuzzy_frame"].set_values(current_values)
 
             # Update confirm button state after filter selection
             self.update_confirm_button()
@@ -885,9 +1032,9 @@ class ProcessingTab(Frame):
     def update_confirm_button(self) -> None:
         """Update the confirm button state based on filter selections."""
         all_filters_selected = all(
-            frame['fuzzy_frame'].get() for frame in self.filter_frames
+            frame["fuzzy_frame"].get() for frame in self.filter_frames
         )
-        
+
         if all_filters_selected:
             self.confirm_button.state(["!disabled"])
             self._update_status("Ready to process")
@@ -899,13 +1046,17 @@ class ProcessingTab(Frame):
         """Rotate the PDF view clockwise."""
         self.pdf_manager.rotate_page(clockwise=True)
         self.rotation_label.config(text=f"{self.pdf_manager.get_rotation()}°")
-        self.pdf_viewer.display_pdf(self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False)
+        self.pdf_viewer.display_pdf(
+            self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False
+        )
 
     def rotate_counterclockwise(self) -> None:
         """Rotate the PDF view counterclockwise."""
         self.pdf_manager.rotate_page(clockwise=False)
         self.rotation_label.config(text=f"{self.pdf_manager.get_rotation()}°")
-        self.pdf_viewer.display_pdf(self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False)
+        self.pdf_viewer.display_pdf(
+            self.current_pdf, self.pdf_viewer.zoom_level, show_loading=False
+        )
 
     def _move_to_skipped_folder(self, pdf_path: str) -> None:
         """Move a skipped PDF file to the skipped documents folder."""
@@ -978,7 +1129,8 @@ class ProcessingTab(Frame):
                 task = PDFTask(
                     task_id=PDFTask.generate_id(),
                     pdf_path=current_file,
-                    filter_values=[""] * len(self.filter_frames),  # Empty values for all filters
+                    filter_values=[""]
+                    * len(self.filter_frames),  # Empty values for all filters
                     status="skipped",  # Set initial status as skipped
                     start_time=self.current_pdf_start_time,
                 )
@@ -1011,12 +1163,20 @@ class ProcessingTab(Frame):
             # Get active tasks to avoid reloading files being processed
             active_tasks = {}
             with self.pdf_queue.lock:
-                active_tasks = {k: v for k, v in self.pdf_queue.tasks.items() if v.status in ["pending", "processing"]}
+                active_tasks = {
+                    k: v
+                    for k, v in self.pdf_queue.tasks.items()
+                    if v.status in ["pending", "processing"]
+                }
 
-            next_pdf = self.pdf_manager.get_next_pdf(config["source_folder"], active_tasks)
+            next_pdf = self.pdf_manager.get_next_pdf(
+                config["source_folder"], active_tasks
+            )
             if next_pdf:
                 self.current_pdf = next_pdf
-                self.current_pdf_start_time = datetime.now()  # Set start time when PDF is loaded
+                self.current_pdf_start_time = (
+                    datetime.now()
+                )  # Set start time when PDF is loaded
                 self.file_info["text"] = path.basename(next_pdf)
                 self.pdf_viewer.display_pdf(next_pdf, 1)
                 self.rotation_label.config(text="0°")
@@ -1024,22 +1184,28 @@ class ProcessingTab(Frame):
 
                 # Clear all filters
                 for frame in self.filter_frames:
-                    frame['fuzzy_frame'].clear()
+                    frame["fuzzy_frame"].clear()
 
                 # Reset first filter values if available
                 if len(self.filter_frames) > 0:
                     config = self.config_manager.get_config()
-                    if config["excel_file"] and config["excel_sheet"] and self.excel_manager.excel_data is not None:
+                    if (
+                        config["excel_file"]
+                        and config["excel_sheet"]
+                        and self.excel_manager.excel_data is not None
+                    ):
                         first_column = config.get("filter1_column")
                         if first_column:
                             df = self.excel_manager.excel_data
-                            values = sorted(df[first_column].astype(str).unique().tolist())
+                            values = sorted(
+                                df[first_column].astype(str).unique().tolist()
+                            )
                             values = [str(x).strip() for x in values]
-                            self.filter_frames[0]['fuzzy_frame'].set_values(values)
+                            self.filter_frames[0]["fuzzy_frame"].set_values(values)
 
                 # Focus the first filter
                 if self.filter_frames:
-                    self.filter_frames[0]['fuzzy_frame'].entry.focus_set()
+                    self.filter_frames[0]["fuzzy_frame"].entry.focus_set()
 
                 self._update_status("New file loaded")
             else:
@@ -1091,7 +1257,9 @@ class ProcessingTab(Frame):
                 # Clear current PDF reference and set new one
                 self.current_pdf = None  # Clear first to prevent any state issues
                 self.current_pdf = file_path
-                self.current_pdf_start_time = datetime.now()  # Set start time when PDF is loaded
+                self.current_pdf_start_time = (
+                    datetime.now()
+                )  # Set start time when PDF is loaded
 
                 # Update UI elements
                 self.file_info["text"] = path.basename(file_path)
@@ -1101,22 +1269,28 @@ class ProcessingTab(Frame):
 
                 # Clear all filters
                 for frame in self.filter_frames:
-                    frame['fuzzy_frame'].clear()
+                    frame["fuzzy_frame"].clear()
 
                 # Reset first filter values if available
                 if len(self.filter_frames) > 0:
                     config = self.config_manager.get_config()
-                    if config["excel_file"] and config["excel_sheet"] and self.excel_manager.excel_data is not None:
+                    if (
+                        config["excel_file"]
+                        and config["excel_sheet"]
+                        and self.excel_manager.excel_data is not None
+                    ):
                         first_column = config.get("filter1_column")
                         if first_column:
                             df = self.excel_manager.excel_data
-                            values = sorted(df[first_column].astype(str).unique().tolist())
+                            values = sorted(
+                                df[first_column].astype(str).unique().tolist()
+                            )
                             values = [str(x).strip() for x in values]
-                            self.filter_frames[0]['fuzzy_frame'].set_values(values)
+                            self.filter_frames[0]["fuzzy_frame"].set_values(values)
 
                 # Focus the first filter
                 if self.filter_frames:
-                    self.filter_frames[0]['fuzzy_frame'].entry.focus_set()
+                    self.filter_frames[0]["fuzzy_frame"].entry.focus_set()
 
                 # Enable confirm button if needed
                 self.update_confirm_button()
@@ -1178,8 +1352,12 @@ class ProcessingTab(Frame):
         self.handle_button.place(relx=0.5, rely=0.5, anchor="center", relheight=0.1)
 
         # Make handle frame draggable for resizing
-        self.handle_frame.bind("<Enter>", lambda e: self.handle_frame.configure(cursor="sb_h_double_arrow"))
-        self.handle_frame.bind("<Leave>", lambda e: self.handle_frame.configure(cursor=""))
+        self.handle_frame.bind(
+            "<Enter>", lambda e: self.handle_frame.configure(cursor="sb_h_double_arrow")
+        )
+        self.handle_frame.bind(
+            "<Leave>", lambda e: self.handle_frame.configure(cursor="")
+        )
         self.handle_frame.bind("<Button-1>", self._start_resize)
         self.handle_frame.bind("<B1-Motion>", self._do_resize)
         self.handle_frame.bind("<ButtonRelease-1>", self._end_resize)
@@ -1212,7 +1390,7 @@ class ProcessingTab(Frame):
             # Get all filter values and ensure they're all filled
             filter_values = []
             for frame in self.filter_frames:
-                value = frame['fuzzy_frame'].get()
+                value = frame["fuzzy_frame"].get()
                 if not value:
                     self._update_status("Select all filters")
                     return
@@ -1220,7 +1398,7 @@ class ProcessingTab(Frame):
 
             # Get the config to access filter columns
             config = self.config_manager.get_config()
-            
+
             # Get all filter column names from config
             filter_columns = []
             for i in range(1, len(filter_values) + 1):
@@ -1228,20 +1406,49 @@ class ProcessingTab(Frame):
                 if column_key in config:
                     filter_columns.append(config[column_key])
                 else:
-                    raise Exception(f"Missing filter column configuration for filter {i}")
+                    raise Exception(
+                        f"Missing filter column configuration for filter {i}"
+                    )
 
-            # Parse the actual value and row index from filter2 value if it exists
+            # Get the row index from filter2 value if it exists
+            row_idx = -1
             if len(filter_values) > 1:
-                filter_values[1], row_idx = self._parse_filter2_value(filter_values[1])
-            else:
-                row_idx = -1
+                # Parse the filter2 value to extract row index if present
+                filter2_value, extracted_row_idx = self.pdf_queue._parse_filter2_value(filter_values[1])
+                print(f"[DEBUG] Parsed filter2 value '{filter_values[1]}' -> value='{filter2_value}', row={extracted_row_idx}")
 
-            # Create PDFTask with a unique task ID
+                if extracted_row_idx >= 0:
+                    row_idx = extracted_row_idx
+                    # Keep the formatted value in filter_values to preserve row information
+                else:
+                    # No valid row found - try to add a new row
+                    print(f"[DEBUG] No existing row found for filter2 value '{filter2_value}' - attempting to add new row")
+                    try:
+                        # Create a new row with the filter values
+                        filter_values[1] = filter2_value  # Use the raw value without formatting
+                        new_row_data, new_row_idx = self.excel_manager.add_new_row(
+                            config["excel_file"],
+                            config["excel_sheet"],
+                            filter_columns,
+                            filter_values
+                        )
+                        
+                        # Update row_idx and filter2 value with the new row information
+                        row_idx = new_row_idx
+                        filter_values[1] = self._format_filter2_value(filter2_value, row_idx, False)
+                        print(f"[DEBUG] Added new row {row_idx} for filter2 value '{filter2_value}'")
+                        
+                    except Exception as e:
+                        print(f"[DEBUG] Failed to add new row: {str(e)}")
+                        self._update_status(f"Failed to add new row: {str(e)}")
+                        return
+
+            # Create PDFTask with a unique task ID, preserving the formatted filter2 value
             task = PDFTask(
                 task_id=PDFTask.generate_id(),
                 pdf_path=self.current_pdf,
-                filter_values=filter_values,
-                row_idx=row_idx
+                filter_values=filter_values,  # Keep the formatted value to avoid re-parsing
+                row_idx=row_idx,
             )
 
             # Add task to queue
@@ -1271,8 +1478,7 @@ class ProcessingTab(Frame):
                 ErrorDialog(
                     self,
                     "Processing Error",
-                    f"Error processing {path.basename(task_path)}:\n{
-                        task.error_msg}",
+                    f"Error processing {path.basename(task_path)}:\n{task.error_msg}",
                 )
 
     def _clear_completed(self) -> None:
@@ -1295,7 +1501,9 @@ class ProcessingTab(Frame):
                 completed = sum(1 for t in tasks.values() if t.status == "completed")
                 failed = sum(1 for t in tasks.values() if t.status == "failed")
                 skipped = sum(1 for t in tasks.values() if t.status == "skipped")
-                pending = sum(1 for t in tasks.values() if t.status in ["pending", "processing"])
+                pending = sum(
+                    1 for t in tasks.values() if t.status in ["pending", "processing"]
+                )
 
             # Update the display
             self.queue_display.update_display(tasks)
@@ -1303,8 +1511,9 @@ class ProcessingTab(Frame):
             # Update statistics display
             if total > 0:
                 self.queue_stats.configure(
-                    text=f"Queue: {total} total ({completed} completed, {failed} failed, {
-                        skipped} skipped, {pending} pending)"
+                    text=f"Queue: {total} total ({completed} completed, {
+                        failed
+                    } failed, {skipped} skipped, {pending} pending)"
                 )
             else:
                 self.queue_stats.configure(text="Queue: 0 total")
@@ -1318,7 +1527,9 @@ class ProcessingTab(Frame):
     def _periodic_update(self) -> None:
         """Periodically check for changes and update the queue display only if needed."""
         try:
-            if self.pdf_queue.check_and_clear_changes():  # Only update if there were changes
+            if (
+                self.pdf_queue.check_and_clear_changes()
+            ):  # Only update if there were changes
                 self.update_queue_display()
         except Exception as e:
             print(f"[DEBUG] Error in periodic update: {str(e)}")
@@ -1340,41 +1551,74 @@ class ProcessingTab(Frame):
             self.pdf_viewer.display_pdf(self.current_pdf)
             self.update_queue_display()
 
-    def reload_excel_data_and_update_ui(self) -> None:
-        """Reload Excel data and update UI elements."""
-        print("[DEBUG] Entering reload_excel_data_and_update_ui")
+    def reload_excel_data_and_update_ui(self, trigger_source: str = "unknown") -> None:
+        """Reload Excel data and update UI elements.
+        
+        Args:
+            trigger_source: Identifier for the code path triggering the reload
+        """
+        print(f"[DEBUG] Entering reload_excel_data_and_update_ui - Triggered by: {trigger_source}")
         try:
             config = self.config_manager.get_config()
-            if not all([
-                config["excel_file"],
-                config["excel_sheet"],
-            ]):
+            if not all(
+                [
+                    config["excel_file"],
+                    config["excel_sheet"],
+                ]
+            ):
                 print("Missing configuration values")
                 return
 
-            print("[DEBUG] Cache state before Excel load - size:", len(self.excel_manager._hyperlink_cache))
-            # Load Excel data only if needed
-            excel_loaded = self.excel_manager.load_excel_data(config["excel_file"], config["excel_sheet"])
-            print(f"[DEBUG] Excel data {'was reloaded' if excel_loaded else 'used cached version'}")
-            print("[DEBUG] Cache state after Excel load - size:", len(self.excel_manager._hyperlink_cache))
+            print(
+                "[DEBUG] Cache state before Excel load - size:",
+                len(self.excel_manager._hyperlink_cache),
+            )
+            # Load Excel data only if needed and store old filter2 value if it exists
+            old_filter2_value = None
+            if len(self.filter_frames) > 1:
+                old_filter2_value = self.filter_frames[1]["fuzzy_frame"].get()
+                if old_filter2_value:
+                    print(f"[DEBUG] Preserving filter2 value: {old_filter2_value}")
+
+            excel_loaded = self.excel_manager.load_excel_data(
+                config["excel_file"], config["excel_sheet"]
+            )
+            print(
+                f"[DEBUG] Excel data {'was reloaded' if excel_loaded else 'used cached version'}"
+            )
+            print(
+                "[DEBUG] Cache state after Excel load - size:",
+                len(self.excel_manager._hyperlink_cache),
+            )
+
+            # Restore filter2 value if it was previously set
+            if old_filter2_value:
+                print(f"[DEBUG] Restoring preserved filter2 value: {old_filter2_value}")
+                if len(self.filter_frames) > 1:
+                    self.filter_frames[1]["fuzzy_frame"].set_values([old_filter2_value])
 
             # Cache hyperlinks for filter2 column only if Excel was reloaded or cache is empty
             if len(self.filter_frames) > 1:
                 filter2_column = config.get("filter2_column")
-                if filter2_column and (excel_loaded or not self.excel_manager._hyperlink_cache):
-                    print(f"[DEBUG] About to cache hyperlinks for filter2 column: {filter2_column}")
-                    self.excel_manager.cache_hyperlinks_for_column(
-                        config["excel_file"], 
-                        config["excel_sheet"], 
-                        filter2_column
+                if filter2_column and (
+                    excel_loaded or not self.excel_manager._hyperlink_cache
+                ):
+                    print(
+                        f"[DEBUG] About to cache hyperlinks for filter2 column: {filter2_column}"
                     )
-                    print("[DEBUG] Cache state after hyperlink caching - size:", len(self.excel_manager._hyperlink_cache))
+                    self.excel_manager.cache_hyperlinks_for_column(
+                        config["excel_file"], config["excel_sheet"], filter2_column
+                    )
+                    print(
+                        "[DEBUG] Cache state after hyperlink caching - size:",
+                        len(self.excel_manager._hyperlink_cache),
+                    )
 
             # Update filter labels
             for i, frame in enumerate(self.filter_frames, 1):
                 column_name = config.get(f"filter{i}_column")
                 if column_name:
-                    frame['label']['text'] = column_name
+                    frame["label"]["text"] = column_name
 
             df = self.excel_manager.excel_data
 
@@ -1390,34 +1634,22 @@ class ProcessingTab(Frame):
                 if first_column:
                     values = sorted(df[first_column].astype(str).unique().tolist())
                     values = [safe_convert_to_str(x) for x in values]
-                    self.filter_frames[0]['fuzzy_frame'].set_values(values)
+                    self.filter_frames[0]["fuzzy_frame"].set_values(values)
 
                 # Clear other filters
                 for frame in self.filter_frames[1:]:
-                    frame['fuzzy_frame'].clear()
-                    frame['fuzzy_frame'].set_values([])
+                    frame["fuzzy_frame"].clear()
+                    frame["fuzzy_frame"].set_values([])
 
         except Exception as e:
             print("[DEBUG] Error in reload_excel_data_and_update_ui:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}")
 
-    def _format_filter2_value(self, value: str, row_idx: int, has_hyperlink: bool = False) -> str:
+    def _format_filter2_value(
+        self, value: str, row_idx: int, has_hyperlink: bool = False
+    ) -> str:
         """Format filter2 value with row number and checkmark if hyperlinked."""
         prefix = "✓ " if has_hyperlink else ""
         # +2 because Excel is 1-based and has header
         return f"{prefix}{value} ⟨Excel Row: {row_idx + 2}⟩"
-
-    def _parse_filter2_value(self, formatted_value: str) -> tuple[str, int]:
-        """Parse filter2 value to get original value and row number."""
-        import re
-
-        # Remove checkmark if present
-        formatted_value = formatted_value.replace("✓ ", "", 1)
-
-        match = re.match(r"(.*?)\s*⟨Excel Row:\s*(\d+)⟩", formatted_value)
-        if match:
-            value = match.group(1).strip()
-            row_num = int(match.group(2))
-            return value, row_num - 2  # Convert back to 0-based index
-        return formatted_value, -1
