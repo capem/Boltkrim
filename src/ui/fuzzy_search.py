@@ -1,8 +1,12 @@
 from __future__ import annotations
-from tkinter import StringVar, Widget, Listbox, END, SINGLE, Event
+from tkinter import StringVar, Widget, Listbox, END, SINGLE, Event, Menu
 from tkinter.ttk import Frame, Entry, Style, Scrollbar
 from typing import Optional, List, Callable, Any
 from difflib import SequenceMatcher
+from pathlib import Path
+from openpyxl import load_workbook
+import os
+import subprocess
 
 
 
@@ -142,6 +146,7 @@ class FuzzySearchFrame(Frame):
         self.listbox.bind("<Double-Button-1>", self._on_select)
         self.listbox.bind("<Return>", lambda e: self._on_select(e) or "break")  # Return "break" to prevent bubbling
         self.listbox.bind("<Escape>", lambda e: self.entry.focus_set())
+        self.listbox.bind("<Button-3>", self._show_context_menu)  # Right-click binding
 
     def _on_focus_in(self, event: Optional[Event] = None) -> None:
         """Handle focus-in event with improved visual feedback."""
@@ -326,3 +331,133 @@ class FuzzySearchFrame(Frame):
         self.entry.delete(0, END)
         self._set_placeholder()
         self.listbox.delete(0, END)
+
+    def _show_context_menu(self, event: Event) -> None:
+        """Show the context menu on right-click."""
+        # Get the item at click position
+        idx = self.listbox.nearest(event.y)
+        if idx < 0 or idx >= self.listbox.size():
+            return
+        
+        # Select the item under cursor
+        self.listbox.selection_clear(0, END)
+        self.listbox.selection_set(idx)
+        self.listbox.activate(idx)
+        
+        # Get the clicked value
+        value = self.listbox.get(idx)
+        if not value.startswith("✓ "):  # Only show menu for hyperlinked items
+            return
+            
+        # Create context menu
+        menu = Menu(self, tearoff=0)
+        menu.add_command(label="Open Linked File", command=lambda: self._open_linked_file(value))
+        
+        # Show the menu at click position
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _open_linked_file(self, value: str) -> None:
+        """Open the linked file from the Excel hyperlink."""
+        try:
+            # Get ProcessingTab instance
+            from .processing_tab import ProcessingTab
+            processing_tab = ProcessingTab.get_instance()
+            if not processing_tab:
+                print("[DEBUG] Could not find ProcessingTab instance")
+                return
+
+            _, row_idx = processing_tab.pdf_queue._parse_filter2_value(value)
+            if row_idx < 0:
+                print(f"[DEBUG] Invalid row index from value: {value}")
+                return
+
+            config = processing_tab.config_manager.get_config()
+            excel_file = config.get("excel_file", "")
+            sheet_name = config.get("excel_sheet", "")
+            filter2_col = config.get("filter2_column", "")
+
+            excel_manager = processing_tab.excel_manager
+            if not excel_manager._hyperlink_cache.get(row_idx, False):
+                print("[DEBUG] No hyperlink found for row")
+                return
+
+            # Load workbook to get hyperlink
+            wb = load_workbook(excel_file, data_only=True)
+            ws = wb[sheet_name]
+
+            # Find the column index
+            header = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
+            if filter2_col not in header:
+                print(f"[DEBUG] Column '{filter2_col}' not found")
+                return
+            col_idx = header[filter2_col]
+
+            # Get cell hyperlink
+            cell = ws.cell(row=row_idx + 2, column=col_idx)
+            if not cell.hyperlink:
+                print("[DEBUG] No hyperlink found in cell")
+                return
+
+            # Get full path relative to Excel file location and handle URL encoding
+            from urllib.parse import unquote
+            excel_dir = Path(excel_file).parent
+            decoded_target = unquote(cell.hyperlink.target)
+            linked_path = Path(excel_dir) / decoded_target
+            
+            try:
+                normalized_path = linked_path.resolve()
+            except Exception:
+                # If resolve fails, try with the raw path
+                normalized_path = linked_path
+
+            print(f"[DEBUG] Excel dir: {excel_dir}")
+            print(f"[DEBUG] Original target: {cell.hyperlink.target}")
+            print(f"[DEBUG] Decoded target: {decoded_target}")
+            print(f"[DEBUG] Linked path: {linked_path}")
+            print(f"[DEBUG] Normalized path: {normalized_path}")
+
+            # Handle both the normalized and raw paths
+            paths_to_try = [normalized_path, linked_path]
+            file_found = False
+
+            for path_to_check in paths_to_try:
+                str_path = str(path_to_check)
+                print(f"[DEBUG] Checking path: {str_path}")
+
+                # Check network path availability
+                if str_path.startswith("\\\\"):
+                    from ..utils.excel_manager import is_path_available
+                    if not is_path_available(str_path):
+                        print(f"[DEBUG] Network path not accessible: {str_path}")
+                        continue
+
+                if path_to_check.exists():
+                    file_found = True
+                    normalized_path = path_to_check
+                    print(f"[DEBUG] Found file at: {normalized_path}")
+                    break
+                else:
+                    print(f"[DEBUG] File not found at: {str_path}")
+
+            if not file_found:
+                from .error_dialog import ErrorDialog
+                ErrorDialog(self, "Error", f"File not found in any location:\n{str(normalized_path)}\n{str(linked_path)}")
+                return
+
+            print(f"[DEBUG] Opening file: {normalized_path}")
+            # Open the file using the system default application
+            if os.name == 'nt':  # Windows
+                os.startfile(normalized_path)
+            else:  # Linux/Mac
+                subprocess.run(['xdg-open' if os.name == 'posix' else 'open', normalized_path])
+
+        except Exception as e:
+            print(f"[DEBUG] Error opening linked file: {str(e)}")
+            from .error_dialog import ErrorDialog
+            ErrorDialog(self, "Error", f"Error opening linked file: {str(e)}")
+        finally:
+            if 'wb' in locals():
+                wb.close()

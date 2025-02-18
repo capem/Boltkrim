@@ -414,6 +414,13 @@ class ProcessingQueue:
 class ProcessingTab(Frame):
     """A modernized tab for processing PDF files with Excel data integration."""
 
+    _instance = None  # Class-level instance tracking
+
+    @classmethod
+    def get_instance(cls) -> Optional['ProcessingTab']:
+        """Get the current ProcessingTab instance."""
+        return cls._instance
+
     def __init__(
         self,
         master: TkWidget,
@@ -423,6 +430,7 @@ class ProcessingTab(Frame):
         error_handler: Callable[[Exception, str], None],
         status_handler: Callable[[str], None],
     ) -> None:
+        ProcessingTab._instance = self  # Store instance
         super().__init__(master)
         self.master = master
         self.config_manager = config_manager
