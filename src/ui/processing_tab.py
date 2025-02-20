@@ -495,7 +495,7 @@ class ProcessingTab(Frame):
 
     def _finish_config_change(self) -> None:
         """Complete the configuration change by reloading data and updating status."""
-        self.reload_excel_data_and_update_ui()
+        self.reload_excel_data_and_update_ui(trigger_source="_finish_config_change")
         self._update_status("Ready")
 
     def _setup_styles(self) -> None:
@@ -827,7 +827,7 @@ class ProcessingTab(Frame):
             self._add_filter(column, f"filter{i}")
 
         # Initialize Excel data for filters
-        self.reload_excel_data_and_update_ui()
+        self.reload_excel_data_and_update_ui(trigger_source="_setup_filters")
 
     def _add_filter(self, column_name: str, identifier: str) -> None:
         """Add a new filter frame."""
@@ -1151,7 +1151,7 @@ class ProcessingTab(Frame):
 
             # Reload Excel data to ensure we have fresh data
             if config["excel_file"] and config["excel_sheet"]:
-                self.reload_excel_data_and_update_ui()
+                self.reload_excel_data_and_update_ui(trigger_source="load_next_pdf")
 
             if not config["source_folder"]:
                 self._update_status("Source folder not configured")
@@ -1237,7 +1237,7 @@ class ProcessingTab(Frame):
 
             # Reload Excel data to ensure we have fresh data
             if config["excel_file"] and config["excel_sheet"]:
-                self.reload_excel_data_and_update_ui()
+                self.reload_excel_data_and_update_ui(trigger_source="_on_file_info_click")
 
             source_folder = config["source_folder"]
 
