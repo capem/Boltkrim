@@ -430,6 +430,8 @@ class ProcessingTab(Frame):
         error_handler: Callable[[Exception, str], None],
         status_handler: Callable[[str], None],
     ) -> None:
+        self._pending_config_change_id = None  # Track pending config change operations
+        self._is_reloading = False  # Track Excel data reload state
         ProcessingTab._instance = self  # Store instance
         super().__init__(master)
         self.master = master
@@ -470,6 +472,10 @@ class ProcessingTab(Frame):
         """Handle configuration changes."""
         self._update_status("Loading...")
 
+        # Cancel any pending config change operation
+        if self._pending_config_change_id:
+            self.after_cancel(self._pending_config_change_id)
+
         # Clear existing filters
         for frame in self.filter_frames:
             frame["frame"].destroy()
@@ -490,11 +496,12 @@ class ProcessingTab(Frame):
         for i, column in enumerate(filter_columns, 1):
             self._add_filter(column, f"filter{i}")
 
-        # Reload Excel data and update UI
-        self.after(100, lambda: self._finish_config_change())
+        # Schedule new config change operation
+        self._pending_config_change_id = self.after(100, self._finish_config_change)
 
     def _finish_config_change(self) -> None:
         """Complete the configuration change by reloading data and updating status."""
+        self._pending_config_change_id = None
         self.reload_excel_data_and_update_ui(trigger_source="_finish_config_change")
         self._update_status("Ready")
 
@@ -827,7 +834,7 @@ class ProcessingTab(Frame):
             self._add_filter(column, f"filter{i}")
 
         # Initialize Excel data for filters
-        self.reload_excel_data_and_update_ui(trigger_source="_setup_filters")
+        # self.reload_excel_data_and_update_ui(trigger_source="_setup_filters")
 
     def _add_filter(self, column_name: str, identifier: str) -> None:
         """Add a new filter frame."""
@@ -1565,7 +1572,13 @@ class ProcessingTab(Frame):
         Args:
             trigger_source: Identifier for the code path triggering the reload
         """
+        # Prevent recursive or concurrent reloads
+        if self._is_reloading:
+            print(f"[DEBUG] Skipping reload from {trigger_source} - reload already in progress")
+            return
+            
         print(f"[DEBUG] Entering reload_excel_data_and_update_ui - Triggered by: {trigger_source}")
+        self._is_reloading = True
         try:
             config = self.config_manager.get_config()
             if not all(
