@@ -1,7 +1,0 @@
-pandas
-PyMuPDF
-openpyxl
-python-Levenshtein
-pywin32
-pillow
-pyinstaller
