@@ -503,7 +503,28 @@ class ProcessingTab(Frame):
         """Complete the configuration change by reloading data and updating status."""
         self._pending_config_change_id = None
         self.reload_excel_data_and_update_ui(trigger_source="_finish_config_change")
+        self._check_source_folder_change()
         self._update_status("Ready")
+        
+    def _check_source_folder_change(self) -> None:
+        """Check if source folder changed and refresh PDF viewer if needed."""
+        config = self.config_manager.get_config()
+        current_source = getattr(self, '_current_source_folder', None)
+        new_source = config["source_folder"]
+        
+        if current_source != new_source:
+            self._current_source_folder = new_source
+            print(f"[DEBUG] Source folder changed from '{current_source}' to '{new_source}', refreshing PDF viewer")
+            
+            # Clear current PDF reference
+            self.current_pdf = None
+            
+            # Clear the PDF viewer
+            if hasattr(self.pdf_viewer, "canvas"):
+                self.pdf_viewer.canvas.delete("all")
+                
+            # Load the next PDF from the new source folder
+            self.load_next_pdf()
 
     def _setup_styles(self) -> None:
         """Configure custom styles for the interface."""
@@ -1192,6 +1213,8 @@ class ProcessingTab(Frame):
                 self.current_pdf_start_time = (
                     datetime.now()
                 )  # Set start time when PDF is loaded
+                # Store current source folder for change detection
+                self._current_source_folder = config["source_folder"]
                 self.file_info["text"] = path.basename(next_pdf)
                 self.pdf_viewer.display_pdf(next_pdf, 1)
                 self.rotation_label.config(text="0°")
@@ -1562,6 +1585,10 @@ class ProcessingTab(Frame):
 
     def handle_config_change(self) -> None:
         """Handle configuration changes by reloading the current PDF if one is loaded."""
+        # Check if source folder has changed
+        self._check_source_folder_change()
+        
+        # If we still have a current PDF after the source folder check, reload it
         if self.current_pdf:
             self.pdf_viewer.display_pdf(self.current_pdf)
             self.update_queue_display()
