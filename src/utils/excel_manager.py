@@ -611,13 +611,33 @@ class ExcelManager:
                     if col not in col_indices:
                         raise Exception(f"Column '{col}' not found in Excel file. Available columns: {', '.join(col_indices.keys())}")
 
-                # Find the last row with data
-                last_row = ws.max_row
-                new_row_idx = last_row + 1
+                # Find the first table's range to determine where to add the new row
+                table_end_row = None
+                for table in ws.tables.values():
+                    try:
+                        current_ref = table.ref
+                        ref_parts = current_ref.split(':')
+                        if len(ref_parts) == 2:
+                            end_ref = ref_parts[1]
+                            table_end_row = int(''.join(filter(str.isdigit, end_ref)))
+                            print(f"[DEBUG] Found table with end row: {table_end_row}")
+                            break  # Use the first table found
+                    except Exception as e:
+                        print(f"[DEBUG] Error processing table reference: {str(e)}")
+                        continue
+
+                # If we found a table, add the row immediately after it
+                if table_end_row:
+                    new_row_idx = table_end_row + 1
+                else:
+                    # Fallback to adding at the end if no table found
+                    new_row_idx = ws.max_row + 1
+                
                 print(f"[DEBUG] Adding row at index {new_row_idx - 2} (Excel row {new_row_idx})")
 
-                # First pass: Copy all formats from the template row
-                template_row = last_row
+                # First pass: Copy all formats from the template row (use row before new row)
+                template_row = new_row_idx - 1
+                print(f"[DEBUG] Using template row {template_row} for formatting")
                 for col_idx in range(1, len(header_row) + 1):
                     template_cell = ws.cell(row=template_row, column=col_idx)
                     new_cell = ws.cell(row=new_row_idx, column=col_idx)
@@ -676,6 +696,37 @@ class ExcelManager:
                     print(f"[DEBUG] Set value '{val}' for column '{col}'")
                     
                 # Save workbook
+                # Check and expand table ranges to include the new row
+                print("[DEBUG] Checking for tables that need to be expanded")
+                for table in ws.tables.values():
+                    try:
+                        current_ref = table.ref
+                        # Split table reference into components (e.g., 'A1:D10' -> ['A1', 'D10'])
+                        ref_parts = current_ref.split(':')
+                        if len(ref_parts) != 2:
+                            continue
+                            
+                        start_ref, end_ref = ref_parts
+                        # Extract row numbers from references
+                        start_row = int(''.join(filter(str.isdigit, start_ref)))
+                        end_row = int(''.join(filter(str.isdigit, end_ref)))
+                        
+                        # Check if new row is immediately after table
+                        if end_row == new_row_idx - 1:
+                            # Get column letters from references (e.g., 'A' from 'A1')
+                            start_col = ''.join(filter(str.isalpha, start_ref))
+                            end_col = ''.join(filter(str.isalpha, end_ref))
+                            
+                            # Create new reference that includes the new row
+                            new_ref = f"{start_col}{start_row}:{end_col}{new_row_idx}"
+                            table.ref = new_ref
+                            print(f"[DEBUG] Expanded table '{table.displayName}' range to {new_ref}")
+                    except Exception as table_e:
+                        print(f"[DEBUG] Error expanding table: {str(table_e)}")
+                        # Continue with other tables even if one fails
+                        continue
+
+                # Save workbook with updated table ranges
                 wb.save(excel_file)
                 
                 # Update cache for the new row
