@@ -469,35 +469,57 @@ class ProcessingTab(Frame):
             self._handle_error(e, "initial data load")
 
     def on_config_change(self) -> None:
-        """Handle configuration changes."""
-        self._update_status("Loading...")
-
-        # Cancel any pending config change operation
+        """Handle configuration changes and preset loading."""
+        # Cancel any pending operation
         if self._pending_config_change_id:
+            print("[DEBUG] Canceling pending config change operation")
             self.after_cancel(self._pending_config_change_id)
 
-        # Clear existing filters
-        for frame in self.filter_frames:
-            frame["frame"].destroy()
-        self.filter_frames.clear()
-
-        # Load new filters from config
+        # Get the current config
         config = self.config_manager.get_config()
-        filter_columns = []
-        i = 1
-        while True:
-            filter_key = f"filter{i}_column"
-            if filter_key not in config:
-                break
-            filter_columns.append(config[filter_key])
-            i += 1
+        
+        # Only proceed if we have valid config values
+        if not all([config[key] for key in ["excel_file", "excel_sheet"]]):
+            print("[DEBUG] Skipping config change - incomplete configuration")
+            return
 
-        # Create filter frames
-        for i, column in enumerate(filter_columns, 1):
-            self._add_filter(column, f"filter{i}")
+        print("[DEBUG] Configuration change detected")
+        self._update_status("Loading...")
 
-        # Schedule new config change operation
-        self._pending_config_change_id = self.after(100, self._finish_config_change)
+        # Schedule the actual config change with a delay to debounce rapid changes
+        def delayed_config_change():
+            try:
+                print("[DEBUG] Executing delayed config change")
+                # Log config details
+                print("[DEBUG] Applied preset config:", config)
+
+                # Clear existing filters
+                for frame in self.filter_frames:
+                    frame["frame"].destroy()
+                self.filter_frames.clear()
+
+                # Load new filters from config
+                filter_columns = []
+                i = 1
+                while True:
+                    filter_key = f"filter{i}_column"
+                    if filter_key not in config:
+                        break
+                    filter_columns.append(config[filter_key])
+                    i += 1
+
+                # Create filter frames
+                for i, column in enumerate(filter_columns, 1):
+                    self._add_filter(column, f"filter{i}")
+
+                # Complete config change
+                self._finish_config_change()
+            except Exception as e:
+                print(f"[DEBUG] Error in delayed config change: {str(e)}")
+                print(traceback.format_exc())
+
+        # Schedule the delayed change
+        self._pending_config_change_id = self.after(250, delayed_config_change)
 
     def _finish_config_change(self) -> None:
         """Complete the configuration change by reloading data and updating status."""
@@ -1041,20 +1063,37 @@ class ProcessingTab(Frame):
                 for i in range(filter_index + 2, len(self.filter_frames)):
                     self.filter_frames[i]["fuzzy_frame"].clear()
 
-                # Special handling for when filter2 is being updated directly
-                if (
-                    filter_index == 1
-                ):  # If we're in filter2, reformat its values with checkmarks
-                    current_filter = self.filter_frames[1]  # Get filter2
+                # Special handling for filter2 updates
+                if filter_index == 1:
+                    print("[DEBUG] Updating filter2 values:")
+                    print(f"[DEBUG] - Sheet: {config['excel_sheet']}")
+                    print(f"[DEBUG] - Column: {config['filter2_column']}")
+                    print(f"[DEBUG] - Cache size before: {len(self.excel_manager._hyperlink_cache)}")
+                    print(f"[DEBUG] - Cache key before: {getattr(self.excel_manager, '_last_cached_key', 'None')}")
+                    
+                    # Ensure hyperlinks are cached
+                    self.excel_manager.cache_hyperlinks_for_column(
+                        config["excel_file"],
+                        config["excel_sheet"],
+                        config["filter2_column"]
+                    )
+                    
+                    print(f"[DEBUG] - Cache size after: {len(self.excel_manager._hyperlink_cache)}")
+                    print(f"[DEBUG] - Cache key after: {getattr(self.excel_manager, '_last_cached_key', 'None')}")
+
+                    # Format values with hyperlink status
+                    current_filter = self.filter_frames[1]
                     current_values = []
+                    print("[DEBUG] Formatting filter2 values:")
                     for idx, row in df.iterrows():
                         value = str(row[config["filter2_column"]]).strip()
                         has_hyperlink = self.excel_manager.has_hyperlink(idx)
-                        formatted_value = self._format_filter2_value(
-                            value, idx, has_hyperlink
-                        )
+                        formatted_value = self._format_filter2_value(value, idx, has_hyperlink)
+                        print(f"[DEBUG] - Row {idx}: value='{value}', has_hyperlink={has_hyperlink}")
                         current_values.append(formatted_value)
-                    if current_values:  # Only update if we have values
+                        
+                    if current_values:
+                        print(f"[DEBUG] Setting {len(current_values)} filter2 values")
                         current_filter["fuzzy_frame"].set_values(current_values)
 
             # Update confirm button state after filter selection
@@ -1645,22 +1684,26 @@ class ProcessingTab(Frame):
                 if len(self.filter_frames) > 1:
                     self.filter_frames[1]["fuzzy_frame"].set_values([old_filter2_value])
 
-            # Cache hyperlinks for filter2 column only if Excel was reloaded or cache is empty
+            # Cache hyperlinks for filter2 column in all cases to ensure it's up to date
             if len(self.filter_frames) > 1:
                 filter2_column = config.get("filter2_column")
-                if filter2_column and (
-                    excel_loaded or not self.excel_manager._hyperlink_cache
-                ):
-                    print(
-                        f"[DEBUG] About to cache hyperlinks for filter2 column: {filter2_column}"
-                    )
+                if filter2_column:
+                    print("[DEBUG] Processing hyperlinks for filter2:")
+                    print(f"[DEBUG] - Sheet: {config['excel_sheet']}")
+                    print(f"[DEBUG] - Column: {filter2_column}")
+                    print(f"[DEBUG] - Cache size before: {len(self.excel_manager._hyperlink_cache)}")
+                    print(f"[DEBUG] - Cache key before: {getattr(self.excel_manager, '_last_cached_key', 'None')}")
+                    
                     self.excel_manager.cache_hyperlinks_for_column(
                         config["excel_file"], config["excel_sheet"], filter2_column
                     )
-                    print(
-                        "[DEBUG] Cache state after hyperlink caching - size:",
-                        len(self.excel_manager._hyperlink_cache),
-                    )
+                    
+                    print(f"[DEBUG] - Cache size after: {len(self.excel_manager._hyperlink_cache)}")
+                    print(f"[DEBUG] - Cache key after: {getattr(self.excel_manager, '_last_cached_key', 'None')}")
+                    
+                    if len(self.filter_frames) > 1 and self.filter_frames[1]["fuzzy_frame"].get():
+                        current_value = self.filter_frames[1]["fuzzy_frame"].get()
+                        print(f"[DEBUG] Current filter2 value: {current_value}")
 
             # Update filter labels
             for i, frame in enumerate(self.filter_frames, 1):
@@ -1693,6 +1736,9 @@ class ProcessingTab(Frame):
             print("[DEBUG] Error in reload_excel_data_and_update_ui:")
             print(traceback.format_exc())
             ErrorDialog(self, "Error", f"Error loading Excel data: {str(e)}")
+        finally:
+            self._is_reloading = False
+            print("[DEBUG] Completed Excel data reload - cleared reloading flag")
 
     def _format_filter2_value(
         self, value: str, row_idx: int, has_hyperlink: bool = False

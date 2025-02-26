@@ -169,17 +169,31 @@ class ExcelManager:
                 print("[DEBUG] Loading fresh Excel data")
                 self.excel_data = read_excel(excel_file, sheet_name=sheet_name)
                 
-                # Restore cache if it was for the same file/sheet
-                new_cache_key = f"{excel_file}|{sheet_name}"
-                if existing_cache and existing_cache_key and existing_cache_key.startswith(new_cache_key):
-                    print("[DEBUG] Restoring preserved cache")
-                    self._hyperlink_cache = existing_cache
-                    self._last_cached_key = existing_cache_key
-                else:
-                    print("[DEBUG] Creating new cache")
+                # Always invalidate cache on sheet change
+                if self._cached_sheet and sheet_name != self._cached_sheet:
+                    print(f"[DEBUG] Sheet changed from '{self._cached_sheet}' to '{sheet_name}' - invalidating cache")
                     self._hyperlink_cache = {}
                     if hasattr(self, '_last_cached_key'):
                         delattr(self, '_last_cached_key')
+                    print("[DEBUG] Cache invalidated and key cleared")
+                else:
+                    # Check if the cache key format matches expected sheet
+                    new_cache_key = f"{excel_file}|{sheet_name}"
+                    if existing_cache_key and not existing_cache_key.startswith(new_cache_key):
+                        print(f"[DEBUG] Cache key mismatch - old key: {existing_cache_key}, expected prefix: {new_cache_key}")
+                        self._hyperlink_cache = {}
+                        if hasattr(self, '_last_cached_key'):
+                            delattr(self, '_last_cached_key')
+                        print("[DEBUG] Cache invalidated due to key mismatch")
+                    if existing_cache and existing_cache_key and existing_cache_key.startswith(new_cache_key):
+                        print("[DEBUG] Restoring preserved cache")
+                        self._hyperlink_cache = existing_cache
+                        self._last_cached_key = existing_cache_key
+                    else:
+                        print("[DEBUG] Creating new cache")
+                        self._hyperlink_cache = {}
+                        if hasattr(self, '_last_cached_key'):
+                            delattr(self, '_last_cached_key')
             finally:
                 setdefaulttimeout(original_timeout)
 
@@ -204,11 +218,27 @@ class ExcelManager:
             print("[DEBUG] Excel data not loaded, skipping hyperlink caching")
             return
 
-        # Skip if hyperlinks are already cached for this file/sheet/column combination
+        # Generate new cache key
         cache_key = f"{excel_file}|{sheet_name}|{column_name}"
-        if hasattr(self, '_last_cached_key') and self._last_cached_key == cache_key and self._hyperlink_cache:
-            print(f"[DEBUG] Hyperlinks already cached for {column_name} with {len(self._hyperlink_cache)} entries, skipping")
-            return
+        print(f"[DEBUG] Requested hyperlink caching for {sheet_name}:{column_name}")
+
+        # Always check cache validity
+        if hasattr(self, '_last_cached_key'):
+            if self._last_cached_key != cache_key:
+                # Split keys to compare parts
+                old_parts = self._last_cached_key.split('|')
+                new_parts = cache_key.split('|')
+                if len(old_parts) == 3 and len(new_parts) == 3:
+                    old_sheet, old_col = old_parts[1:3]
+                    print(f"[DEBUG] Cache transition: {old_sheet}:{old_col} -> {sheet_name}:{column_name}")
+                
+                print("[DEBUG] Invalidating cache - key mismatch")
+                self._hyperlink_cache = {}
+            elif self._hyperlink_cache:
+                print(f"[DEBUG] Using existing cache ({len(self._hyperlink_cache)} entries)")
+                return
+        else:
+            print("[DEBUG] No previous cache key found")
 
         print(f"[DEBUG] Loading hyperlink information for column {column_name}")
         try:
